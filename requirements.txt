@@ -1,0 +1,16 @@
+# Multi-HARM requirements.
+# GPU (Colab T4 / Kaggle P100 / local CUDA): install all lines.
+# CPU smoke test only: skip bitsandbytes (it will not install cleanly).
+torch
+transformers>=4.45
+accelerate
+bitsandbytes
+datasets
+scikit-learn
+pandas
+pyarrow
+numpy
+scipy
+matplotlib
+tqdm
+psutil

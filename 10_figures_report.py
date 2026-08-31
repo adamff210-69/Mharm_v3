@@ -24,7 +24,7 @@ sys.path.insert(0, ".")
 from config import load_config, ATTACK_TYPES
 from multi_harm_common import figures as F
 from multi_harm_common.io_utils import load_json, save_json
-from multi_harm_common.metrics import roc_points
+from multi_harm_common.metrics import roc_points, type_vs_clean_mask
 from multi_harm_common.sigcache import load_cache
 
 TYPES = ATTACK_TYPES
@@ -62,7 +62,7 @@ def main():
     from multi_harm_common.detect import score_spec_on_split
     for t in TYPES:
         ev = score_spec_on_split(specs[t], df, cache, "test", cfg.epsilon)
-        m = ev["types"] == t
+        m = type_vs_clean_mask(ev["types"], ev["labels"], t)
         f, tt = roc_points(ev["labels"][m], ev["s"][m])
         curves[t] = (f, tt)
     evg = score_spec_on_split(gen, df, cache, "test", cfg.epsilon)

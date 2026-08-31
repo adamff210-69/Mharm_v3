@@ -21,7 +21,9 @@ sys.path.insert(0, ".")
 from config import load_config
 from multi_harm_common import env as ENV
 from multi_harm_common.io_utils import save_json, ensure_dir
-from multi_harm_common.model import forward_signals, get_n_layers, load_model
+from multi_harm_common.model import (
+    forward_signals, get_n_heads, get_n_layers, load_model,
+)
 from multi_harm_common.chat import encode_sample
 
 

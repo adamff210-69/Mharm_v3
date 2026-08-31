@@ -58,7 +58,8 @@ def calibrate_pooled_hstar(df, cache: SigCache, cfg, n_heads: int) -> dict:
     attn_layers = sorted({l for m in sub["masses"] for (l, _) in m})
     res = S.select_h_star(sub["masses"], sub["widths"], sub["labels"],
                           attn_layers, n_heads,
-                          top_k=cfg.top_k_heads, eps=cfg.epsilon)
+                          top_k=cfg.top_k_heads, eps=cfg.epsilon,
+                          fit_frac=cfg.probe_fit_frac, seed=cfg.seed)
     res["calib_ids"] = ids
     res["n_clean"] = int((sub["labels"] == 0).sum())
     res["n_inj"] = int((sub["labels"] == 1).sum())
@@ -113,7 +114,10 @@ def calibrate_specialist(name: str, df, cache: SigCache, cfg, hstar: dict,
     # --- 4) attention half: per-specialist H*_s and shared H* ----------------
     widths = sub["widths"]
     head_res = S.select_h_star(masses, widths, labels, attn_layers, n_heads,
-                               top_k=cfg.top_k_heads, eps=cfg.epsilon)
+                               top_k=cfg.top_k_heads, eps=cfg.epsilon,
+                               fit_frac=cfg.probe_fit_frac,
+                               seed=(cfg.seed if name == "general"
+                                     else cfg.seed + 101))
     head = head_res["best_head"]
     if use_shared_head:
         head = hstar["best_head"]
@@ -122,6 +126,9 @@ def calibrate_specialist(name: str, df, cache: SigCache, cfg, hstar: dict,
     r_shared = np.array([S.head_ratio(masses[i][tuple(hstar["best_head"])],
                                       cfg.epsilon, widths[i])
                          for i in range(n)])
+    att_head_insample = float(auroc(labels, r_head))
+    att_head_honest = (float(head_res["best_auroc"]) if not use_shared_head
+                       else att_head_insample)
 
     # --- 5) fusion weight alpha ------------------------------------------------
     fres = S.choose_alpha(r_head, p_scores, labels, step=cfg.alpha_step)
@@ -149,7 +156,8 @@ def calibrate_specialist(name: str, df, cache: SigCache, cfg, hstar: dict,
         "fpr_budget": budget,
         # v3 Phase 3 addition — the two halves logged BEFORE fusion:
         "auroc": {
-            "att_head": float(auroc(labels, r_head)),
+            "att_head": att_head_honest,
+            "att_head_insample": att_head_insample,
             "att_shared": float(auroc(labels, r_shared)),
             "hid": float(auroc(labels, p_scores)),
             "fused": float(auroc(labels, fused)),

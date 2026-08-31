@@ -41,8 +41,25 @@ def load_model(cfg):
     return model, tokenizer, device, quant
 
 
+def _config_int(cfg, *names: str) -> int:
+    for n in names:
+        if hasattr(cfg, n):
+            return int(getattr(cfg, n))
+    raise AttributeError(
+        f"{type(cfg).__name__} has none of {names}"
+    )
+
+
 def get_n_layers(model) -> int:
-    return int(model.config.n_layer)
+    """Layer count across GPT-2 (``n_layer``) and Llama/Mistral
+    (``num_hidden_layers``)."""
+    return _config_int(model.config, "num_hidden_layers", "n_layer", "n_layers")
+
+
+def get_n_heads(model) -> int:
+    """Head count across GPT-2 (``n_head``) and Llama/Mistral
+    (``num_attention_heads``)."""
+    return _config_int(model.config, "num_attention_heads", "n_head", "n_heads")
 
 
 @torch.inference_mode()

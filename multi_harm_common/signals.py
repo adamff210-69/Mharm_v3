@@ -90,11 +90,12 @@ def zscore(x: np.ndarray) -> np.ndarray:
 
 def select_h_star(masses_by_sample: list[dict], widths_by_sample: list[tuple],
                   labels: np.ndarray, attn_layers: list[int], n_heads: int,
-                  top_k: int = 5, eps: float = 1e-6) -> dict:
+                  top_k: int = 5, eps: float = 1e-6,
+                  fit_frac: float | None = 0.7, seed: int = 0) -> dict:
     """Per (layer, head) AUROC of R (span-invariant) on the calibration set.
 
-    masses_by_sample: one dict per sample, {(l, h): [m_qp, m_qi, m_qq]} raw
-    column sums; widths_by_sample: (W_p, W_i, W_q) per sample.
+    Heads are ranked on a fit split; ``best_auroc`` is the selected head's
+    AUROC on the held-out remainder (in-sample best-of-~128 is optimistic).
     """
     n = len(masses_by_sample)
     cand = [(l, h) for l in attn_layers for h in range(n_heads)]
@@ -102,18 +103,36 @@ def select_h_star(masses_by_sample: list[dict], widths_by_sample: list[tuple],
     for i, m in enumerate(masses_by_sample):
         for j, (l, h) in enumerate(cand):
             scores[i, j] = head_ratio(m[(l, h)], eps, widths_by_sample[i])
-    y = (labels == 1).astype(float)
-    aurocs = np.array([auroc(y, scores[:, j]) for j in range(len(cand))])
-    order = np.argsort(-aurocs)
+    y = (labels == 1).astype(int)
+    idx = np.arange(n)
+    use_split = (fit_frac is not None and n >= 20
+                 and 0.0 < float(fit_frac) < 1.0)
+    if use_split:
+        rng = np.random.default_rng(seed)
+        rng.shuffle(idx)
+        n_fit = max(10, int(n * fit_frac))
+        n_fit = min(n_fit, n - 2)
+        fit_idx, eval_idx = idx[:n_fit], idx[n_fit:]
+        if len(np.unique(y[eval_idx])) < 2:
+            fit_idx, eval_idx = idx, idx
+    else:
+        fit_idx, eval_idx = idx, idx
+    aurocs_fit = np.array([auroc(y[fit_idx], scores[fit_idx, j])
+                           for j in range(len(cand))])
+    order = np.argsort(-np.nan_to_num(aurocs_fit, nan=-1.0))
     best = int(order[0])
+    honest = float(auroc(y[eval_idx], scores[eval_idx, best]))
+    insample = float(auroc(y, scores[:, best]))
     return {
         "best_head": [int(cand[best][0]), int(cand[best][1])],
-        "best_auroc": float(aurocs[best]),
+        "best_auroc": honest,
+        "best_auroc_insample": insample,
         "top_k": [
-            [[int(cand[i][0]), int(cand[i][1])], float(aurocs[i])]
+            [[int(cand[i][0]), int(cand[i][1])], float(aurocs_fit[i])]
             for i in order[:top_k]
         ],
-        "all": {f"{l}x{h}": float(a) for (l, h), a in zip(cand, aurocs)},
+        "all": {f"{l}x{h}": float(a) for (l, h), a in zip(cand, aurocs_fit)},
+        "n_fit": int(len(fit_idx)), "n_eval": int(len(eval_idx)),
     }
 
 

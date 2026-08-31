@@ -6,17 +6,44 @@ from sklearn.metrics import confusion_matrix, roc_curve
 
 
 def auroc(y: np.ndarray, scores: np.ndarray, pos_label: int = 1) -> float:
-    """Area under the ROC curve; 0.5 on degenerate (single-class) inputs."""
+    """Area under the ROC curve.
+
+    Returns NaN (not 0.5) when AUROC is undefined — a single-class slice
+    or a sklearn error. Callers that previously saw a wall of 0.5000 were
+    evaluating injected-only subsets (all labels == 1). Use
+    :func:`type_vs_clean_ids` / :func:`type_vs_clean_mask` for per-type
+    *detection* AUROC.
+    """
     y = np.asarray(y)
     s = np.asarray(scores, dtype=float)
-    classes = np.unique(y)
-    if len(classes) < 2 or np.all(np.isnan(s)):
-        return 0.5
+    y_bin = (y == pos_label).astype(int)
+    if y_bin.size == 0 or np.all(np.isnan(s)) or len(np.unique(y_bin)) < 2:
+        return float("nan")
+    from sklearn.metrics import roc_auc_score
     try:
-        from sklearn.metrics import roc_auc_score
+        return float(roc_auc_score(y_bin, s))
+    except TypeError:
         return float(roc_auc_score(y, s, pos_label=pos_label))
-    except Exception:
-        return 0.5
+
+
+def type_vs_clean_ids(df, split: str, attack_type: str) -> list:
+    """Ids for detection AUROC of one attack type on ``split``.
+
+    Clean rows are stored as ``attack_type='clean'``. Filtering to the
+    attack type alone is an all-positive set, so AUROC is undefined.
+    This returns injected-of-type **plus** clean negatives from the same
+    split.
+    """
+    inj = df[(df["split"] == split) & (df["attack_type"] == attack_type)]["id"]
+    cln = df[(df["split"] == split) & (df["label"] == 0)]["id"]
+    return inj.tolist() + cln.tolist()
+
+
+def type_vs_clean_mask(types, labels, attack_type) -> np.ndarray:
+    """Boolean mask: this attack type's injected rows + all clean rows."""
+    types = np.asarray(types)
+    labels = np.asarray(labels)
+    return (types == attack_type) | (labels == 0)
 
 
 def tpr_fpr(y: np.ndarray, scores: np.ndarray, theta: float) -> tuple[float, float]:
@@ -63,7 +90,11 @@ def spread(vals: list[float]) -> float:
 
 
 def roc_points(y: np.ndarray, scores: np.ndarray):
-    fpr, tpr, _ = roc_curve(y, scores)
+    y = np.asarray(y)
+    s = np.asarray(scores, dtype=float)
+    if len(np.unique(y)) < 2:
+        return np.array([0.0, 1.0]), np.array([0.0, 1.0])
+    fpr, tpr, _ = roc_curve(y, s)
     return fpr, tpr
 
 

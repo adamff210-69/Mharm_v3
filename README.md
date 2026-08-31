@@ -162,9 +162,15 @@ choice, this is the one implemented — change in one place, noted here:
    loadable wins — on a T4 that is usually **int8**, a legitimate
    near-full-precision reference). The correlation analysis is identical; the
    report states which reference was actually used.
-9. **Clean pairs.** MS-MARCO golden query-passage pairs (HF `ms_marco`,
-   `passage_ranked` dev); fallback to `data/clean_pairs.csv`
-   (`passage,query` columns) or `--synthetic` (offline test only).
+9. **Clean pairs.** MS-MARCO golden query-passage pairs (HF `ms_marco`
+   configs `v1.1` / `v2.1`; selected `passages.passage_text` + `query`).
+   Fallback to `data/clean_pairs.csv` (`passage,query` columns) or
+   `--synthetic` (offline test only).
+10. **Per-type detection AUROC.** Clean rows are `attack_type='clean'`.
+    Scoring AUROC on the attack-type slice alone is all-positive and used
+    to return a dummy 0.5. Per-type AUROC is (injected of that type +
+    clean) on the same split. Head selection reports held-out AUROC, not
+    best-of-~128 in-sample.
 
 ## Success criteria (where each is checked)
 

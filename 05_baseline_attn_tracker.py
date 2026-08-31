@@ -20,7 +20,7 @@ sys.path.insert(0, ".")
 from config import load_config
 from multi_harm_common import signals as S
 from multi_harm_common.io_utils import load_json, save_json
-from multi_harm_common.metrics import auroc
+from multi_harm_common.metrics import auroc, type_vs_clean_ids
 from multi_harm_common.sigcache import load_cache
 
 TYPES = ["topic", "naive", "fake", "combined"]
@@ -50,7 +50,7 @@ def main():
     # ---- evaluate on test: per-type AUROC (threshold-free) -----------------
     per_type = {}
     for t in TYPES:
-        m = (sub := cache.subset(df[(df["split"] == "test") & (df["attack_type"] == t)]["id"].tolist()))
+        m = cache.subset(type_vs_clean_ids(df, "test", t))
         r = np.array([S.head_ratio(x[head], cfg.epsilon, m["widths"][i])
                       for i, x in enumerate(m["masses"])])
         per_type[t] = float(auroc(m["labels"], r))

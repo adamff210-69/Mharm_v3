@@ -26,7 +26,7 @@ from config import load_config
 from multi_harm_common.calibrate import calibrate_specialist
 from multi_harm_common.detect import score_spec_on_split
 from multi_harm_common.io_utils import load_json, save_json
-from multi_harm_common.metrics import auroc
+from multi_harm_common.metrics import auroc, type_vs_clean_ids
 from multi_harm_common.sigcache import load_cache
 
 TYPES = ["topic", "naive", "fake", "combined"]
@@ -83,7 +83,7 @@ def main():
                   for i in range(len(m["ids"]))])
     hidden_per_type = {}
     for t in TYPES:
-        sub = cache.subset(df[(df["split"] == "test") & (df["attack_type"] == t)]["id"].tolist())
+        sub = cache.subset(type_vs_clean_ids(df, "test", t))
         idx = {sid: i for i, sid in enumerate(m["ids"])}
         s = np.array([p[idx[sid]] for sid in sub["ids"]])
         hidden_per_type[t] = float(auroc(sub["labels"], s))

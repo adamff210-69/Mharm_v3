@@ -47,7 +47,7 @@ def load_clean_pairs(cfg) -> pd.DataFrame:
 
     Order of sources:
       1. cfg.local_clean_csv  (data/clean_pairs.csv, cols: passage,query)
-      2. HuggingFace ms_marco (passage_ranked dev — golden query-passage pairs)
+      2. HuggingFace ms_marco (v1.1/v2.1 validation — selected passage + query)
       3. synthetic (cfg.synthetic_clean or --synthetic)
     """
     cache = os.path.join(cfg.data_dir, "clean_pairs.parquet")
@@ -82,26 +82,75 @@ def _normalize_clean(raw: pd.DataFrame, source: str) -> pd.DataFrame:
     return pd.DataFrame({"passage": p.astype(str), "query": q.astype(str), "source_id": source})
 
 
+def _pick_ms_marco_passage(ex) -> str | None:
+    """Flatten HF ms_marco v1.1/v2.1 nested ``passages`` into one string."""
+    raw = ex.get("passage")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    passages = ex.get("passages")
+    if isinstance(passages, dict):
+        texts = passages.get("passage_text") or passages.get("passage") or []
+        selected = passages.get("is_selected") or []
+        if texts:
+            for flag, text in zip(selected, texts):
+                if flag and text:
+                    return str(text).strip()
+            return str(texts[0]).strip() if texts[0] else None
+    if isinstance(passages, list) and passages:
+        p0 = passages[0]
+        if isinstance(p0, dict):
+            return (p0.get("passage_text") or p0.get("text") or p0.get("passage") or "")
+        return str(p0).strip()
+    return None
+
+
+def _ms_marco_to_pairs(ds, max_rows: int) -> pd.DataFrame:
+    cols = set(ds.column_names)
+    qcol = "query" if "query" in cols else ("question" if "question" in cols else None)
+    if qcol is None:
+        return pd.DataFrame(columns=["passage", "query", "source_id"])
+    rows = []
+    n = min(len(ds), max(max_rows * 4, 4000))
+    for i in range(n):
+        if len(rows) >= max_rows:
+            break
+        ex = ds[i]
+        q = ex.get(qcol)
+        p = _pick_ms_marco_passage(ex)
+        if not q or not p:
+            continue
+        q, p = str(q).strip(), str(p).strip()
+        if len(p) > 80 and len(q) > 5:
+            rows.append({"passage": p, "query": q, "source_id": "ms_marco"})
+    return pd.DataFrame(rows)
+
+
 def _load_ms_marco(cfg) -> pd.DataFrame:
+    """Load golden query–passage pairs.
+
+    HuggingFace ``ms_marco`` configs are ``v1.1`` / ``v2.1`` (the old
+    ``passage_ranked`` config no longer exists). Passages are nested under
+    ``passages.passage_text`` with ``is_selected`` flags.
+    """
     from datasets import load_dataset
-    for cfg_name, split, fields in [
-        ("passage_ranked", "dev", ("passage", "question")),
-        ("passage_ranked", "train", ("passage", "question")),
-        (None, "dev", ("passage", "question")),
-    ]:
+    need = int(getattr(cfg, "n_base_pairs", 1650) or 1650)
+    attempts = [
+        ("ms_marco", "v1.1", "validation"),
+        ("ms_marco", "v1.1", "train"),
+        ("ms_marco", "v2.1", "validation"),
+        ("ms_marco", "v2.1", "train"),
+        ("microsoft/ms_marco", "v1.1", "validation"),
+    ]
+    for repo, config, split in attempts:
         try:
-            ds = (load_dataset("ms_marco", cfg_name, split=split)
-                  if cfg_name else load_dataset("ms_marco", split=split))
-            pcol, qcol = fields
-            if pcol in ds.column_names and qcol in ds.column_names:
-                df = pd.DataFrame({"passage": ds[pcol], "query": ds[qcol],
-                                   "source_id": "ms_marco"})
-                df = df.dropna()
-                df = df[(df["passage"].str.len() > 80) & (df["query"].str.len() > 5)]
-                if len(df):
-                    return df
+            ds = load_dataset(repo, config, split=split)
+            df = _ms_marco_to_pairs(ds, need)
+            if len(df):
+                print(f"  loaded {len(df)} pairs from {repo} {config}/{split}")
+                return df
+            print(f"  ms_marco ({repo}/{config}/{split}) had no usable pairs")
         except Exception as e:
-            print(f"  ms_marco ({cfg_name or 'default'}/{split}) failed: {type(e).__name__}: {e}")
+            print(f"  ms_marco ({repo}/{config}/{split}) failed: {type(e).__name__}: {e}")
     print("  WARNING: ms_marco could not be loaded — falling back to synthetic pairs.")
     return pd.DataFrame(columns=["passage", "query", "source_id"])
 
@@ -146,6 +195,9 @@ def _synthetic_pairs(cfg) -> pd.DataFrame:
         k = (i // len(topics)) % len(sentences)
         passage = " ".join(sentences[(k + j) % len(sentences)].format(t=t)
                            for j in range(4))
+        # Unique suffix so drop_duplicates cannot collapse the pool to ~200
+        # repeating (topic, query) templates.
+        passage = f"{passage} Case file {i:04d}."
         query = queries[(i * 7 + k) % len(queries)]
         rows.append({"passage": passage, "query": query,
                      "source_id": f"synthetic-{i}"})

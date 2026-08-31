@@ -35,7 +35,9 @@ from multi_harm_common.calibrate import (recalibrate_general_without,
 from multi_harm_common.detect import (evaluate_meta, meta_decision,
                                       score_spec_on_split)
 from multi_harm_common.io_utils import load_json, save_json
-from multi_harm_common.metrics import auroc, pearson, tpr_fpr
+from multi_harm_common.metrics import (
+    auroc, pearson, tpr_fpr, type_vs_clean_ids, type_vs_clean_mask,
+)
 from multi_harm_common.sigcache import load_cache
 
 TYPES = ["topic", "naive", "fake", "combined"]
@@ -56,8 +58,7 @@ def load_all(cfg):
 def per_type_auroc_of(scores: dict, cache, df, split: str) -> dict:
     out = {}
     for t in TYPES:
-        m = cache.subset(df[(df["split"] == split) & (df["attack_type"] == t)]
-                         ["id"].tolist())
+        m = cache.subset(type_vs_clean_ids(df, split, t))
         s = np.array([scores[sid] for sid in m["ids"]])
         out[t] = float(auroc(m["labels"], s))
     return out
@@ -107,10 +108,11 @@ def table_b(cfg, cache, df, specs, gen, row1, row2, hid_base):
     for t in TYPES:
         sp = specs[t]
         ev = score_spec_on_split(sp, df, cache, "test", cfg.epsilon)
-        m = ev["types"] == t
-        tpr, fpr = tpr_fpr(ev["labels"][m], ev["s"][m], sp["theta"])
+        m_pos = ev["types"] == t
+        m_auc = type_vs_clean_mask(ev["types"], ev["labels"], t)
+        tpr, fpr = tpr_fpr(ev["labels"][m_pos], ev["s"][m_pos], sp["theta"])
         rows.append({"config": f"specialist-alone {t}", "type": t,
-                     "auroc": float(auroc(ev["labels"][m], ev["s"][m])),
+                     "auroc": float(auroc(ev["labels"][m_auc], ev["s"][m_auc])),
                      "detection": float(tpr), "asr": float(1 - tpr)})
     return pd.DataFrame(rows), None
 
@@ -121,7 +123,7 @@ def table_c(cfg, cache, df, specs, gen, meta_cfg):
     for t in TYPES:
         sp = specs[t]
         ev = score_spec_on_split(sp, df, cache, "test", cfg.epsilon)
-        m = ev["types"] == t
+        m = type_vs_clean_mask(ev["types"], ev["labels"], t)
         rows.append({"ablation": "attention-half only", "type": t,
                      "auroc": float(auroc(ev["labels"][m], ev["zr"][m]))})
         rows.append({"ablation": "hidden-half only", "type": t,
@@ -148,8 +150,7 @@ def table_c(cfg, cache, df, specs, gen, meta_cfg):
                             for i in range(len(sub["ids"]))])
                   - sp["p_mu"]) / max(sp["p_sd"], 1e-12))
             theta = S.choose_theta(fused, sub["labels"], sp["fpr_budget"])["theta"]
-            mtest = df[(df["split"] == "test") & (df["attack_type"] == t)]
-            mt = cache.subset(mtest["id"].tolist())
+            mt = cache.subset(type_vs_clean_ids(df, "test", t))
             if tag.startswith("top-1"):
                 s_t = (np.array([S.head_ratio(x[tuple(sp["head"])], cfg.epsilon,
                                                 mt["widths"][i])
@@ -295,7 +296,7 @@ def sec_48_table(cfg, cache, df, specs, gen, row1, row2):
     for t in TYPES:
         sp = specs[t]
         ev = score_spec_on_split(sp, df, cache, "test", cfg.epsilon)
-        m = ev["types"] == t
+        m = type_vs_clean_mask(ev["types"], ev["labels"], t)
         per_type[t] = float(auroc(ev["labels"][m], ev["s"][m]))
     table = {
         "attention-only shared (4.8 r1)": dict(row1["per_type_auroc"],

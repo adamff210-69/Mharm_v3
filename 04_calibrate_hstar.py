@@ -36,7 +36,9 @@ def main():
     print(f"\nPooled H* (n={hstar['n_clean']} clean + {hstar['n_inj']} injected "
           f"train samples):")
     print(f"  best head: layer {hstar['best_head'][0]}, head {hstar['best_head'][1]} "
-          f"| AUROC {hstar['best_auroc']:.4f}")
+          f"| held-out AUROC {hstar['best_auroc']:.4f}"
+          + (f" (in-sample {hstar['best_auroc_insample']:.4f})"
+             if hstar.get("best_auroc_insample") is not None else ""))
     print(f"  top-{len(hstar['top_k'])} heads:")
     for (l, h), a in hstar["top_k"]:
         print(f"    layer {l} head {h:2d}  AUROC {a:.4f}")

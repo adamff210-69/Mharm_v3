@@ -199,7 +199,8 @@ def build_dataset(cfg) -> pd.DataFrame:
         b = base.iloc[idx[i % len(idx)]]
         rows.append({"base_idx": int(idx[i % len(idx)]), "attack_type": "clean",
                      "goal": "-", "passage": b["passage"], "query": b["query"],
-                     "injection": "", "injection_offset": [None, None], "label": 0})
+                     "injection": "", "injection_offset": [None, None], "label": 0,
+                     "source_id": str(b.get("source_id", "unknown"))})
     # injected: deterministic distinct base pairs per cell (no reuse across cells
     # when the pool allows it)
     pos = n_clean
@@ -213,7 +214,8 @@ def build_dataset(cfg) -> pd.DataFrame:
                 rows.append({"base_idx": bi, "attack_type": at, "goal": g["id"],
                              "passage": inj_passage, "query": b["query"],
                              "injection": inj_passage[off[0]:off[1]],
-                             "injection_offset": list(off), "label": 1})
+                             "injection_offset": list(off), "label": 1,
+                             "source_id": str(b.get("source_id", "unknown"))})
 
     df = pd.DataFrame(rows)
     df["id"] = [f"{'c' if r['label'] == 0 else 'i'}{k:05d}"
@@ -234,4 +236,4 @@ def build_dataset(cfg) -> pd.DataFrame:
     shuffled = shuffled.drop(columns=["base_idx"])
     shuffled["split"] = [labels_map[i] for i in shuffled.index]
     return shuffled[["id", "split", "attack_type", "goal", "passage", "query",
-                     "injection", "injection_offset", "label"]]
+                     "injection", "injection_offset", "label", "source_id"]]

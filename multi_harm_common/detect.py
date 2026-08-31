@@ -92,7 +92,8 @@ def meta_decision(spec_scores: dict, specs: dict, general_score: float | None,
     if fired:
         attribution = max(fired, key=lambda n: scores[n])
         decision = True
-    elif general_score is not None and general_score > (general_theta or 1e9):
+    elif general_score is not None and \
+            general_score > (general_theta if general_theta is not None else 1e9):
         attribution = "general"
         decision = True
     else:

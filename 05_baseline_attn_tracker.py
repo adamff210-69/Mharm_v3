@@ -50,7 +50,7 @@ def main():
     # ---- evaluate on test: per-type AUROC (threshold-free) -----------------
     per_type = {}
     for t in TYPES:
-        m = (sub := cache.subset(df[(df["split"] == "test") & (df["attack_type"] == t)]["id"].tolist()))
+        m = (sub := cache.subset(df[(df["split"] == "test") & ((df["attack_type"] == t) | (df["label"] == 0))]["id"].tolist()))
         r = np.array([S.head_ratio(x[head], cfg.epsilon, m["widths"][i])
                       for i, x in enumerate(m["masses"])])
         per_type[t] = float(auroc(m["labels"], r))

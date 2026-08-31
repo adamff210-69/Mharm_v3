@@ -56,9 +56,11 @@ def main():
     lines.append("\n## Code hashes (SHA-256)\n")
     lines.append("| file | sha256 |")
     lines.append("|---|---|")
-    codefiles = sorted(f for f in os.listdir(".") if f.endswith(".py")) + \
-        [f"multi_harm_common/{f}" for f in
-         sorted(os.listdir("multi_harm_common")) if f.endswith(".py")]
+    top_scripts = sorted(f for f in os.listdir(".")
+                         if f.endswith(".py") and os.path.isfile(f))
+    common_scripts = sorted(f for f in os.listdir("multi_harm_common")
+                            if f.endswith(".py"))
+    codefiles = top_scripts + [f"multi_harm_common/{f}" for f in common_scripts]
     for f in codefiles:
         lines.append(f"| {f} | {sha256(f)[:16]}... |")
 
@@ -117,13 +119,18 @@ resumable via out/progress/extract.json).
     if os.path.exists(staging):
         shutil.rmtree(staging)
     os.makedirs(os.path.join(staging, "multi_harm_common"))
-    for f in codefiles + ["requirements.txt", "README.md", "config.py"]:
-        if os.path.exists(f) and f not in codefiles:
+    # Copy every pipeline script + config into the staging dir. The old code
+    # skipped top-level *.py because they were already in ``codefiles``, which
+    # left an incomplete package (no 01-11, no config.py).
+    for f in top_scripts + ["config.py"]:
+        if os.path.exists(f):
             shutil.copy(f, staging)
-    for f in os.listdir("multi_harm_common"):
-        if f.endswith(".py"):
-            shutil.copy(os.path.join("multi_harm_common", f),
-                        os.path.join(staging, "multi_harm_common"))
+    for f in common_scripts:
+        shutil.copy(os.path.join("multi_harm_common", f),
+                    os.path.join(staging, "multi_harm_common"))
+    for f in ("requirements.txt", "README.md", "DEMO_RUNBOOK.md"):
+        if os.path.exists(f):
+            shutil.copy(f, staging)
     shutil.copytree(cfg.out_dir, os.path.join(staging, "out"),
                     ignore=shutil.ignore_patterns("repro", "_stage"))
     if os.path.exists(os.path.join(cfg.data_dir, "dataset.parquet")):

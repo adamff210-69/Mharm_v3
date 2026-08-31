@@ -35,7 +35,7 @@ TYPES = ["topic", "naive", "fake", "combined"]
 def per_type_aurocs(scores_all: dict, cache, df, split: str):
     out = {}
     for t in TYPES:
-        m = cache.subset(df[(df["split"] == split) & (df["attack_type"] == t)]["id"].tolist())
+        m = cache.subset(df[(df["split"] == split) & ((df["attack_type"] == t) | (df["label"] == 0))]["id"].tolist())
         idx = {sid: i for i, sid in enumerate(m["ids"])}
         s = np.array([scores_all[sid] for sid in m["ids"]])
         out[t] = float(auroc(m["labels"], s))
@@ -83,7 +83,7 @@ def main():
                   for i in range(len(m["ids"]))])
     hidden_per_type = {}
     for t in TYPES:
-        sub = cache.subset(df[(df["split"] == "test") & (df["attack_type"] == t)]["id"].tolist())
+        sub = cache.subset(df[(df["split"] == "test") & ((df["attack_type"] == t) | (df["label"] == 0))]["id"].tolist())
         idx = {sid: i for i, sid in enumerate(m["ids"])}
         s = np.array([p[idx[sid]] for sid in sub["ids"]])
         hidden_per_type[t] = float(auroc(sub["labels"], s))

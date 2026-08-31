@@ -121,22 +121,44 @@ def select_h_star(masses_by_sample: list[dict], widths_by_sample: list[tuple],
 # Residual-half signal: L* selection + linear probe
 # ---------------------------------------------------------------------------
 
+def _stratified_split(labels: np.ndarray, rng, fit_frac: float = 0.7):
+    """Stratified fit/eval split. Keeps both classes in both halves whenever
+    possible; a plain shuffle can put the whole held-out slice in one class on
+    a small calibration set, which reports a meaningless 0.5 AUROC even when
+    the signal is real."""
+    labels = np.asarray(labels)
+    idx = np.arange(len(labels))
+    fit, ev = [], []
+    for cls in sorted(np.unique(labels)):
+        ci = idx[labels == cls].copy()
+        if len(ci) == 1:
+            fit.append(ci)
+            continue
+        k = max(1, int(round(len(ci) * fit_frac)))
+        if len(ci) - k == 0 and len(ci) > 1:
+            k = len(ci) - 1
+        rng.shuffle(ci)
+        fit.append(ci[:k])
+        ev.append(ci[k:])
+    fit = np.concatenate(fit) if fit else np.array([], dtype=int)
+    ev = np.concatenate(ev) if ev else np.array([], dtype=int)
+    return fit, ev
+
+
 def select_l_star(hid_by_sample: list[dict], labels: np.ndarray,
                   candidate_layers: list[int], fit_frac: float = 0.7
                   ) -> dict:
     """Per-layer linear-probe AUROC (probe fit on fit_frac of calibration,
     evaluated on the held-out remainder — no optimistic bias)."""
     n = len(hid_by_sample)
-    idx = np.arange(n)
     rng = np.random.default_rng(0)
-    rng.shuffle(idx)
-    n_fit = max(10, int(n * fit_frac))
-    fit, eval_ = idx[:n_fit], idx[n_fit:]
+    fit_idx, eval_idx = _stratified_split(labels, rng, fit_frac)
+    fit, eval_ = fit_idx, eval_idx
 
     out = {"per_layer": {}}
     for l in candidate_layers:
-        X = np.array([hid_by_sample[i][l] for i in idx])
-        y = (labels[idx] == 1).astype(int)
+        X = np.array([hid_by_sample[i][l] for i in range(n)])
+        y = (labels == 1).astype(int)
         scaler = StandardScaler()
         Xs = scaler.fit_transform(X)
         clf = LogisticRegression(max_iter=2000, C=1.0)
@@ -153,31 +175,32 @@ def select_l_star(hid_by_sample: list[dict], labels: np.ndarray,
 
 
 def fit_probe(hid_by_sample: list[dict], labels: np.ndarray, layer: int,
-              fit_frac: float = 0.7) -> tuple[dict, float]:
-    """Fit the probe used at inference. Returns (probe_params, fit_auroc).
+              fit_frac: float = 0.7) -> tuple[dict, float, float]:
+    """Fit the probe used at inference.
 
-    probe_params: {coef, bias, mean, std} — enough to score new samples.
+    Returns ``(probe_params, fit_auroc, eval_auroc)`` where ``eval_auroc`` is
+    measured on the held-out fraction — the number that should be reported.
+    Reporting ``fit_auroc`` (on training rows) would be an in-sample artifact.
     """
     n = len(hid_by_sample)
     X = np.array([hid_by_sample[i][layer] for i in range(n)])
     y = (labels == 1).astype(int)
-    idx = np.arange(n)
     rng = np.random.default_rng(0)
-    rng.shuffle(idx)
-    n_fit = max(10, int(n * fit_frac))
-    fit = idx[:n_fit]
+    fit, ev = _stratified_split(labels, rng, fit_frac)
     scaler = StandardScaler()
     Xs = scaler.fit_transform(X)
     clf = LogisticRegression(max_iter=2000, C=1.0)
     clf.fit(Xs[fit], y[fit])
     proba = clf.predict_proba(Xs)[:, 1]
-    a = auroc(y, proba)
+    fit_auroc = auroc(y[fit], proba[fit])
+    eval_auroc = auroc(y[ev], proba[ev]) if len(ev) >= 2 else \
+        auroc(y, proba)
     params = {"layer": int(layer),
               "coef": clf.coef_[0].tolist(),
               "bias": float(clf.intercept_[0]),
               "mean": scaler.mean_.tolist(),
               "std": scaler.scale_.tolist()}
-    return params, float(a)
+    return params, float(fit_auroc), float(eval_auroc)
 
 
 def probe_probs(hid: np.ndarray, probe: dict) -> np.ndarray:

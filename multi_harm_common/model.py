@@ -41,8 +41,41 @@ def load_model(cfg):
     return model, tokenizer, device, quant
 
 
+def _config_value(config, attrs: tuple[str, ...]) -> int:
+    """Read the first present config attribute, tolerant of naming changes."""
+    for attr in attrs:
+        if hasattr(config, attr):
+            try:
+                return int(getattr(config, attr))
+            except (TypeError, ValueError):
+                continue
+    raise AttributeError(
+        f"Could not find any of {attrs} on {type(config).__name__}; "
+        f"checked {''.join(attrs)}."
+    )
+
+
 def get_n_layers(model) -> int:
-    return int(model.config.n_layer)
+    """Return the model's layer count, tolerant of transformers config naming.
+
+    Older Llama-style configs expose ``n_layer``; Mistral and most modern
+    configs use ``num_hidden_layers``. Guard both so a fresh clone runs with
+    Mistral-7B without a hand patch.
+    """
+    return _config_value(model.config, ("num_hidden_layers", "n_layer",
+                                        "num_layers", "n_layers"))
+
+
+def get_n_heads(model) -> int:
+    """Return the model's attention-head count, tolerant of config naming.
+
+    Llama/GPT-2 use ``n_head``; Mistral/Qwen and many modern configs use
+    ``num_attention_heads``. This fixes the same fresh-clone crash that the
+    layer-count fix addressed (01_setup_and_validate.py originally read
+    ``model.config.n_head`` directly).
+    """
+    return _config_value(model.config, ("num_attention_heads", "num_heads",
+                                        "n_head", "n_heads"))
 
 
 @torch.inference_mode()

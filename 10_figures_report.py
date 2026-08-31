@@ -62,7 +62,7 @@ def main():
     from multi_harm_common.detect import score_spec_on_split
     for t in TYPES:
         ev = score_spec_on_split(specs[t], df, cache, "test", cfg.epsilon)
-        m = ev["types"] == t
+        m = (ev["types"] == t) | (ev["labels"] == 0)
         f, tt = roc_points(ev["labels"][m], ev["s"][m])
         curves[t] = (f, tt)
     evg = score_spec_on_split(gen, df, cache, "test", cfg.epsilon)
@@ -156,8 +156,10 @@ def main():
               f"{crit(mean_gain > 0.03)} |")
     md.append(f"| Mean FPR | < 5% | {tableA['fpr']:.4f} | "
               f"{crit(tableA['fpr'] < 0.05)} |")
-    md.append(f"| Attribution accuracy | > 75% | {tableA['attr_accuracy']} | "
-              f"{crit(tableA['attr_accuracy'] or 0 > 0.75)} |")
+    attr_acc = tableA.get("attr_accuracy")
+    md.append(f"| Attribution accuracy | > 75% | "
+              f"{attr_acc if attr_acc is not None else 'n/a'} | "
+              f"{crit(attr_acc is not None and attr_acc > 0.75)} |")
     lat_pct = lat.get("forward_overhead_pct", lat.get("overhead_pct"))
     md.append(f"| Latency overhead | < 0.5% | "
               f"{lat_pct if lat_pct is None else format(lat_pct, '.3f') + ' %'} | "

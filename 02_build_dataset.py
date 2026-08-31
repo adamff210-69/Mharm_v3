@@ -38,6 +38,31 @@ def read_fingerprint(cfg) -> str | None:
     return fp.get("sha256") if fp else None
 
 
+def write_source_report(cfg, df) -> dict:
+    """Record where the clean text came from and warn loudly if it is synthetic.
+
+    Prevents the silent synthetic fallback from being presented as real
+    MS-MARCO data — a mistake that would invalidate every downstream number.
+    """
+    src = df["source_id"].astype(str)
+    counts = {
+        str(k): int(v) for k, v in src.replace(r"-\d+$", "", regex=True)
+        .value_counts().items()
+    }
+    synthetic = bool((counts.get("synthetic", 0) > 0) or
+                     (counts.get("unknown", 0) == len(df)))
+    rep = {"counts": counts, "synthetic_clean_fallback": synthetic}
+    save_json(rep, os.path.join(cfg.data_dir, "clean_source.json"))
+    if synthetic:
+        print("\n  !! WARNING: clean passages came from the SYNTHETIC fallback. "
+              "These results are for pipeline testing only — do NOT present "
+              "them as real-data results. Re-run with MS-MARCO reachable or a "
+              "local data/clean_pairs.csv.")
+    else:
+        print(f"\n  Clean-text source: {counts}")
+    return rep
+
+
 def _invalidate_signals(cfg, dataset_path: str) -> None:
     """Remove signal cache + extraction checkpoint if they were produced from
     a different dataset (same sample-id scheme, different content would
@@ -88,6 +113,7 @@ def main():
     print("Loading clean pairs ...")
     df = build_dataset(cfg)
     ensure_dir(cfg.data_dir)
+    write_source_report(cfg, df)
     df.to_parquet(out, index=False)
     write_fingerprint(cfg, out)
     print(f"\nWrote {len(df)} rows -> {out}")
@@ -104,7 +130,7 @@ def print_split_stats(df):
     import pandas as pd
     print("\n  split x attack_type:")
     print(pd.crosstab(df["attack_type"], df["split"]).to_string())
-    print("\n  injected cells (type x goal), test counts:")
+    print("\n  injected cells (type x goal), ALL splits:")
     inj = df[df["label"] == 1]
     print(pd.crosstab(inj["attack_type"], inj["goal"]).to_string())
     print(f"\n  injection length chars: min={inj['injection'].str.len().min()} "

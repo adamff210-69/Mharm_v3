@@ -6,17 +6,25 @@ from sklearn.metrics import confusion_matrix, roc_curve
 
 
 def auroc(y: np.ndarray, scores: np.ndarray, pos_label: int = 1) -> float:
-    """Area under the ROC curve; 0.5 on degenerate (single-class) inputs."""
+    """Area under the ROC curve; 0.5 on degenerate (single-class) inputs.
+
+    ``pos_label`` is accepted (and asserted to be 1) for API compatibility, but
+    is NOT passed to ``roc_auc_score``. Passing a runtime ``pos_label = 1``
+    variable is rejected by newer scikit-learn (>= 1.6) and was being swallowed
+    by the old except clause, silently returning 0.5 for every AUROC.
+    """
     y = np.asarray(y)
     s = np.asarray(scores, dtype=float)
     classes = np.unique(y)
     if len(classes) < 2 or np.all(np.isnan(s)):
         return 0.5
+    if pos_label != 1:
+        raise ValueError("auroc() only supports binary labels with positive class 1")
     try:
         from sklearn.metrics import roc_auc_score
-        return float(roc_auc_score(y, s, pos_label=pos_label))
-    except Exception:
-        return 0.5
+        return float(roc_auc_score(y, s))
+    except Exception as exc:  # nosec
+        raise ValueError(f"auroc() could not compute ROC AUC: {exc}") from exc
 
 
 def tpr_fpr(y: np.ndarray, scores: np.ndarray, theta: float) -> tuple[float, float]:

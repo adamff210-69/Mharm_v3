@@ -34,14 +34,18 @@ def main():
     save_json(hstar, os.path.join(cfg.out_dir, "calib", "H_star.json"))
 
     print(f"\nPooled H* (n={hstar['n_clean']} clean + {hstar['n_inj']} injected "
-          f"train samples):")
+          f"train samples)")
+    print(f"  held-out eval: n={hstar['n_eval_clean'] + hstar['n_eval_inj']} "
+          f"(clean {hstar['n_eval_clean']} + injected {hstar['n_eval_inj']}) —— "
+          f"these rows were NOT used to pick the head")
     print(f"  best head: layer {hstar['best_head'][0]}, head {hstar['best_head'][1]} "
-          f"| AUROC {hstar['best_auroc']:.4f}")
-    print(f"  top-{len(hstar['top_k'])} heads:")
+          f"| held-out AUROC {hstar['best_auroc']:.4f} "
+          f"(selection-set AUROC {hstar['select_auroc']:.4f})")
+    print(f"  top-{len(hstar['top_k'])} heads (selection-set AUROC):")
     for (l, h), a in hstar["top_k"]:
         print(f"    layer {l} head {h:2d}  AUROC {a:.4f}")
     top10 = sorted(hstar["all"].items(), key=lambda kv: -kv[1])[:10]
-    print("  top-10 overall:")
+    print("  top-10 overall (selection-set AUROC):")
     for k, v in top10:
         print(f"    {k:8s} {v:.4f}")
     print(f"\nSaved -> {os.path.join(cfg.out_dir, 'calib', 'H_star.json')}")

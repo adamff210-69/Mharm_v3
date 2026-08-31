@@ -21,7 +21,8 @@ sys.path.insert(0, ".")
 from config import load_config
 from multi_harm_common import env as ENV
 from multi_harm_common.io_utils import save_json, ensure_dir
-from multi_harm_common.model import forward_signals, get_n_layers, load_model
+from multi_harm_common.model import (forward_signals, get_n_heads, get_n_layers,
+                                     load_model)
 from multi_harm_common.chat import encode_sample
 
 
@@ -69,10 +70,11 @@ def main():
         n_hid = len(sig["hidden"])
         n_layers_att = len(sig["attn_layers"])
         sample_m = list(sig["masses"].values())[0]
+        n_heads = get_n_heads(model)
         print(f"  {t['id']}: tokens={enc.n_tokens} "
               f"masses={n_layers_att}x{n_mass // n_layers_att} heads "
               f"hidden_layers={n_hid} m_qp={sample_m[0]:.4f} m_qi={sample_m[1]:.4f}")
-        assert n_mass == n_layers_att * model.config.n_head
+        assert n_mass == n_layers_att * n_heads
         assert n_hid == len(cand)
 
     ensure_dir(cfg.out_dir)

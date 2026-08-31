@@ -56,7 +56,7 @@ def load_all(cfg):
 def per_type_auroc_of(scores: dict, cache, df, split: str) -> dict:
     out = {}
     for t in TYPES:
-        m = cache.subset(df[(df["split"] == split) & (df["attack_type"] == t)]
+        m = cache.subset(df[(df["split"] == split) & ((df["attack_type"] == t) | (df["label"] == 0))]
                          ["id"].tolist())
         s = np.array([scores[sid] for sid in m["ids"]])
         out[t] = float(auroc(m["labels"], s))
@@ -107,7 +107,7 @@ def table_b(cfg, cache, df, specs, gen, row1, row2, hid_base):
     for t in TYPES:
         sp = specs[t]
         ev = score_spec_on_split(sp, df, cache, "test", cfg.epsilon)
-        m = ev["types"] == t
+        m = (ev["types"] == t) | (ev["labels"] == 0)
         tpr, fpr = tpr_fpr(ev["labels"][m], ev["s"][m], sp["theta"])
         rows.append({"config": f"specialist-alone {t}", "type": t,
                      "auroc": float(auroc(ev["labels"][m], ev["s"][m])),
@@ -121,7 +121,7 @@ def table_c(cfg, cache, df, specs, gen, meta_cfg):
     for t in TYPES:
         sp = specs[t]
         ev = score_spec_on_split(sp, df, cache, "test", cfg.epsilon)
-        m = ev["types"] == t
+        m = (ev["types"] == t) | (ev["labels"] == 0)
         rows.append({"ablation": "attention-half only", "type": t,
                      "auroc": float(auroc(ev["labels"][m], ev["zr"][m]))})
         rows.append({"ablation": "hidden-half only", "type": t,
@@ -148,7 +148,7 @@ def table_c(cfg, cache, df, specs, gen, meta_cfg):
                             for i in range(len(sub["ids"]))])
                   - sp["p_mu"]) / max(sp["p_sd"], 1e-12))
             theta = S.choose_theta(fused, sub["labels"], sp["fpr_budget"])["theta"]
-            mtest = df[(df["split"] == "test") & (df["attack_type"] == t)]
+            mtest = df[(df["split"] == "test") & ((df["attack_type"] == t) | (df["label"] == 0))]
             mt = cache.subset(mtest["id"].tolist())
             if tag.startswith("top-1"):
                 s_t = (np.array([S.head_ratio(x[tuple(sp["head"])], cfg.epsilon,
@@ -295,7 +295,7 @@ def sec_48_table(cfg, cache, df, specs, gen, row1, row2):
     for t in TYPES:
         sp = specs[t]
         ev = score_spec_on_split(sp, df, cache, "test", cfg.epsilon)
-        m = ev["types"] == t
+        m = (ev["types"] == t) | (ev["labels"] == 0)
         per_type[t] = float(auroc(ev["labels"][m], ev["s"][m]))
     table = {
         "attention-only shared (4.8 r1)": dict(row1["per_type_auroc"],

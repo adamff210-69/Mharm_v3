@@ -23,7 +23,6 @@ import pandas as pd
 sys.path.insert(0, ".")
 from config import load_config
 from multi_harm_common import signals as S
-from multi_harm_common.detect import score_spec_on_split
 from multi_harm_common.io_utils import load_json, save_json
 from multi_harm_common.metrics import auroc, pearson, tpr_fpr
 from multi_harm_common.sigcache import load_cache

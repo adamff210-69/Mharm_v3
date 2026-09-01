@@ -40,6 +40,9 @@ def main():
 
     specs = load_json(os.path.join(cfg.out_dir, "calib", "specialists.json"))
     gen = load_json(os.path.join(cfg.out_dir, "calib", "general.json"))
+    global TYPES
+    TYPES = [t for t in ATTACK_TYPES if t in specs]
+    TYPES += [t for t in specs if t not in TYPES and t != "general"]
     row1 = load_json(os.path.join(exp, "row1_attn_shared.json"))
     row2 = load_json(os.path.join(exp, "row2_general.json"))
     hid_base = load_json(os.path.join(exp, "baseline_hidden_only.json"))

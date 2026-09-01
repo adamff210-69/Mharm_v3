@@ -343,9 +343,15 @@ def load_qrag_dataset(cfg, path: str) -> pd.DataFrame:
             label = int(label)
             doc = str(_qrag_pick(obj, "document", "passage", "text", "context", default="") or "")
             query = str(_qrag_pick(obj, "question", "query", default="") or "")
-            attack = str(_qrag_pick(obj, "attack", "injection", "payload", default="") or "")
+            blob = _qrag_attack_blob(obj)
+            raw_atk = obj.get("attack")
+            if isinstance(raw_atk, dict):
+                attack = str(raw_atk.get("text") or "")
+            else:
+                attack = str(_qrag_pick(obj, "attack", "injection", "payload", default="") or "")
             start, end, payload = _qrag_span(obj, doc, attack, label)
-            family = str(_qrag_pick(obj, "family", "attack_family", "goal", default="-") or "-")
+            family = str(blob.get("family") or _qrag_pick(
+                obj, "family", "attack_family", "goal", default="-") or "-")
             at = _qrag_attack_type(obj, label)
             if label == 0:
                 at, payload, start, end = "clean", "", None, None
@@ -391,6 +397,7 @@ def load_qrag_dataset(cfg, path: str) -> pd.DataFrame:
           f"(inj={int((shuffled.label==1).sum())} clean={int((shuffled.label==0).sum())})")
     print(f"  span round-trip OK {n_ok}/{len(inj)}")
     print(f"  types: {active_types(shuffled)}")
+    print("  type counts:\n" + shuffled["attack_type"].value_counts().to_string())
     return shuffled[["id", "split", "attack_type", "goal", "passage", "query",
                      "injection", "injection_offset", "label"]]
 

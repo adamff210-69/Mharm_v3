@@ -299,29 +299,44 @@ def _qrag_span(obj: dict, doc: str, attack: str, label: int):
     return None, None, attack or ""
 
 
+def _qrag_attack_blob(obj: dict) -> dict:
+    a = obj.get("attack")
+    return a if isinstance(a, dict) else {}
+
+
 def _qrag_attack_type(obj: dict, label: int) -> str:
     if label == 0:
         return "clean"
-    at = _qrag_pick(obj, "attack_type", "harm_type", "type", "wrapper")
+    blob = _qrag_attack_blob(obj)
+    at = _qrag_pick(obj, "attack_type", "harm_type", "wrapper")
+    if at is None:
+        at = blob.get("attack_type") or blob.get("wrapper")
     if at in ATTACK_TYPES:
         return at
-    # QuietRAG tiers: 1 loud banners, 2 quiet on-topic, 3 stealth
-    tier = obj.get("tier")
+    # QuietRAG nested attack: tier 1 loud, 2 quiet on-topic, 3 stealth
+    tier = blob.get("tier", obj.get("tier"))
     try:
         tier = int(tier)
     except (TypeError, ValueError):
         tier = None
+    fam = str(blob.get("family") or _qrag_pick(obj, "family", "attack_family", default="") or "").lower()
+    vis = str(blob.get("visibility") or "").lower()
+    pos = str(blob.get("position") or "").lower()
+    loud = blob.get("loud_keyword_signature")
     if tier == 1:
         return "naive"
     if tier == 2:
         return "topic"
     if tier == 3:
-        fam = str(_qrag_pick(obj, "family", "attack_family", default="")).lower()
-        return "combined" if ("combin" in fam or "mix" in fam) else "fake"
+        stealth = vis in ("hidden", "stealth", "invisible", "quiet") or pos in (
+            "middle", "infix", "embedded", "mid")
+        mix = ("combin" in fam or "mix" in fam or "indirect" in fam)
+        if stealth or mix or loud is False:
+            return "combined"
+        return "fake"
     if at:
         return str(at)
-    fam = _qrag_pick(obj, "family", "attack_family", default="unknown")
-    return str(fam)
+    return fam or "unknown"
 
 
 def load_qrag_dataset(cfg, path: str) -> pd.DataFrame:

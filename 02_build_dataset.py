@@ -7,7 +7,7 @@ Writes data/dataset.parquet with columns:
     id, split, attack_type, goal, passage, query, injection,
     injection_offset (passage-relative char span), label
 
-Run:  python 02_build_dataset.py [--force] [--synthetic]
+Run:  python 02_build_dataset.py [--force] [--synthetic] [--jsonl PATH]
 """
 import argparse
 import hashlib
@@ -16,7 +16,7 @@ import sys
 
 sys.path.insert(0, ".")
 from config import load_config, GOALS
-from multi_harm_common.dataset import build_dataset
+from multi_harm_common.dataset import build_dataset, find_qrag_jsonl
 from multi_harm_common.io_utils import ensure_dir, save_json, load_json
 
 
@@ -58,21 +58,32 @@ def main():
     ap.add_argument("--force", action="store_true", help="rebuild even if cached")
     ap.add_argument("--synthetic", action="store_true",
                     help="offline synthetic clean pairs (no HF download)")
+    ap.add_argument("--jsonl", default="",
+                    help="QuietRAG qrag_v1.jsonl (pre-spanned attacks)")
     args = ap.parse_args()
 
     cfg = load_config()
     if args.synthetic:
         cfg.synthetic_clean = True
+    if args.jsonl:
+        cfg.qrag_jsonl = args.jsonl
 
     import pandas as pd
     out = os.path.join(cfg.data_dir, "dataset.parquet")
-    expected_n = cfg.n_clean + 4 * len(GOALS) * cfg.n_inj_per_cell
+    qpath = find_qrag_jsonl(cfg.qrag_jsonl)
+    if qpath:
+        expected_n = None
+        cfg.qrag_jsonl = qpath
+        print(f"  using QuietRAG jsonl: {qpath}")
+    else:
+        expected_n = cfg.n_clean + 4 * len(GOALS) * cfg.n_inj_per_cell
     reusable = False
     if os.path.exists(out) and not args.force:
         cur_hash = _sha256_file(out)
         fp_hash = read_fingerprint(cfg)
         df = pd.read_parquet(out)
-        if len(df) == expected_n and (fp_hash is None or fp_hash == cur_hash):
+        if ((expected_n is None) or len(df) == expected_n) and (
+                fp_hash is None or fp_hash == cur_hash) and not qpath:
             reusable = True
         else:
             print(f"WARNING: existing dataset is stale (rows={len(df)} vs "

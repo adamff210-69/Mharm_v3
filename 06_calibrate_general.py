@@ -26,6 +26,7 @@ from config import load_config
 from multi_harm_common.calibrate import calibrate_specialist
 from multi_harm_common.detect import score_spec_on_split
 from multi_harm_common.io_utils import load_json, save_json
+from multi_harm_common.dataset import active_types
 from multi_harm_common.metrics import auroc, type_vs_clean_ids
 from multi_harm_common.sigcache import load_cache
 
@@ -35,8 +36,7 @@ TYPES = ["topic", "naive", "fake", "combined"]
 def per_type_aurocs(scores_all: dict, cache, df, split: str):
     out = {}
     for t in TYPES:
-        m = cache.subset(df[(df["split"] == split) & (df["attack_type"] == t)]["id"].tolist())
-        idx = {sid: i for i, sid in enumerate(m["ids"])}
+        m = cache.subset(type_vs_clean_ids(df, split, t))
         s = np.array([scores_all[sid] for sid in m["ids"]])
         out[t] = float(auroc(m["labels"], s))
     return out
@@ -51,6 +51,8 @@ def main():
     hstar = load_json(hstar_path)
     cache = load_cache(cfg.data_dir)
     df = pd.read_parquet(os.path.join(cfg.data_dir, "dataset.parquet"))
+    global TYPES
+    TYPES = active_types(df) or TYPES
 
     print("Calibrating HARM_general (shared head + shared L*/probe/alpha/theta) ...")
     gen = calibrate_specialist("general", df, cache, cfg, hstar, use_shared_head=True)

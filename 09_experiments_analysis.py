@@ -35,6 +35,7 @@ from multi_harm_common.calibrate import (recalibrate_general_without,
 from multi_harm_common.detect import (evaluate_meta, meta_decision,
                                       score_spec_on_split)
 from multi_harm_common.io_utils import load_json, save_json
+from multi_harm_common.dataset import active_types
 from multi_harm_common.metrics import (
     auroc, pearson, tpr_fpr, type_vs_clean_ids, type_vs_clean_mask,
 )
@@ -395,6 +396,10 @@ def main():
     cfg = load_config()
     os.makedirs(EXP(cfg), exist_ok=True)
     cache, df, hstar, specs, gen, meta_cfg = load_all(cfg)
+    global TYPES
+    TYPES = [t for t in active_types(df) if t in specs] or TYPES
+    if cfg.unseen_type not in TYPES and TYPES:
+        cfg.unseen_type = TYPES[-1]
     row1 = load_json(os.path.join(EXP(cfg), "row1_attn_shared.json"))
     row2 = load_json(os.path.join(EXP(cfg), "row2_general.json"))
     hid_base = load_json(os.path.join(EXP(cfg), "baseline_hidden_only.json"))

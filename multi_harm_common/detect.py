@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .signals import head_ratio, probe_probs
+from .signals import fuse, head_ratio, probe_probs
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +121,7 @@ def score_spec_on_split(spec: dict, df, cache, split: str, eps: float = 1e-6
                    / max(spec["r_sd"], 1e-12) for i in range(n)])
     zp = np.array([((probe_probs(s["hid"][spec["L_star"]][i], spec["probe"])
                      - spec["p_mu"]) / max(spec["p_sd"], 1e-12)) for i in range(n)])
-    fused = spec["alpha"] * zr + (1 - spec["alpha"]) * zp
+    fused = fuse(spec["alpha"], zr, zp)
     return {"ids": s["ids"], "labels": s["labels"], "types": s["types"],
             "s": fused, "zr": zr, "zp": zp}
 

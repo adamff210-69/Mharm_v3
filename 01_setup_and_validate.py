@@ -74,7 +74,7 @@ def main():
         print(f"  {t['id']}: tokens={enc.n_tokens} "
               f"masses={n_layers_att}x{n_mass // n_layers_att} heads "
               f"hidden_layers={n_hid} m_qp={sample_m[0]:.4f} m_qi={sample_m[1]:.4f}")
-        assert n_mass == n_layers_att * model.config.n_head
+        assert n_mass == n_layers_att * get_n_heads(model)
         assert n_hid == len(cand)
 
     ensure_dir(cfg.out_dir)

@@ -13,8 +13,14 @@ import numpy as np
 from . import signals as S
 from .metrics import auroc, pearson
 from .sigcache import SigCache
+from .dataset import active_types
 
 TYPES = ["topic", "naive", "fake", "combined"]
+
+
+def _types(df) -> list[str]:
+    t = active_types(df) if df is not None else []
+    return t or list(TYPES)
 
 
 # ---------------------------------------------------------------------------
@@ -135,10 +141,11 @@ def calibrate_specialist(name: str, df, cache: SigCache, cfg, hstar: dict,
     a = fres["alpha"]
     zr, r_mu, r_sd = S.zscore(r_head)
     zp, p_mu, p_sd = S.zscore(p_scores)
-    fused = a * zr + (1 - a) * zp
+    fused = S.fuse(a, zr, zp)
 
     # --- 6) threshold theta (FPR-budget constrained) ---------------------------
-    budget = cfg.target_fpr if name == "general" else cfg.target_fpr / 4.0
+    n_spec = max(1, len(_types(df)))
+    budget = cfg.target_fpr if name == "general" else cfg.target_fpr / n_spec
     tres = S.choose_theta(fused, labels, budget)
 
     spec = {

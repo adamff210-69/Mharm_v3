@@ -67,6 +67,7 @@ class Config:
     clean_query_max_chars: int = 160
     n_base_pairs: int = 1650       # clean pool to draw from (1000 + 650 inj cells)
     local_clean_csv: str = ""      # optional data/clean_pairs.csv fallback
+    qrag_jsonl: str = ""           # QuietRAG / qrag_v1.jsonl (pre-spanned attacks)
 
     # --- calibration -------------------------------------------------------
     calib_h_samples: int = 160         # H* calibration size (v3 2.1: 150-200)

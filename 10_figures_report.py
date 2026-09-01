@@ -23,6 +23,7 @@ import pandas as pd
 sys.path.insert(0, ".")
 from config import load_config, ATTACK_TYPES
 from multi_harm_common import figures as F
+from multi_harm_common.dataset import active_types
 from multi_harm_common.io_utils import load_json, save_json
 from multi_harm_common.metrics import roc_points, type_vs_clean_mask
 from multi_harm_common.sigcache import load_cache
@@ -157,7 +158,7 @@ def main():
     md.append(f"| Mean FPR | < 5% | {tableA['fpr']:.4f} | "
               f"{crit(tableA['fpr'] < 0.05)} |")
     md.append(f"| Attribution accuracy | > 75% | {tableA['attr_accuracy']} | "
-              f"{crit(tableA['attr_accuracy'] or 0 > 0.75)} |")
+              f"{crit((tableA['attr_accuracy'] or 0) > 0.75)} |")
     lat_pct = lat.get("forward_overhead_pct", lat.get("overhead_pct"))
     md.append(f"| Latency overhead | < 0.5% | "
               f"{lat_pct if lat_pct is None else format(lat_pct, '.3f') + ' %'} | "

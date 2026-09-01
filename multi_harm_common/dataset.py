@@ -233,8 +233,173 @@ def build_injection(passage: str, attack_type: str, goal: dict) -> tuple[str, tu
     return passage + inj, (start, start + len(core))
 
 
+def active_types(df) -> list[str]:
+    """Attack types present in the built dataset (excludes clean)."""
+    vals = [str(t) for t in df["attack_type"].unique() if str(t) not in ("clean", "-", "nan")]
+    preferred = [t for t in ATTACK_TYPES if t in vals]
+    extra = sorted(t for t in vals if t not in preferred)
+    return preferred + extra
+
+
+def find_qrag_jsonl(explicit: str = "") -> str:
+    """Locate qrag_v1.jsonl / QuietRAG export."""
+    cands = [explicit, os.environ.get("MULTI_HARM_QRAG_JSONL", "")]
+    cands += [
+        "data/qrag_v1.jsonl",
+        "qrag_v1.jsonl",
+        "data/quietrag/qrag_v1.jsonl",
+    ]
+    cands += glob.glob("/kaggle/input/**/qrag_v1.jsonl", recursive=True)
+    cands += glob.glob("**/qrag_v1.jsonl", recursive=True)
+    seen = set()
+    for p in cands:
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        if os.path.isfile(p):
+            return p
+    return ""
+
+
+def _qrag_pick(obj: dict, *names, default=None):
+    for n in names:
+        if n in obj and obj[n] is not None and obj[n] != "":
+            return obj[n]
+    return default
+
+
+def _qrag_span(obj: dict, doc: str, attack: str, label: int):
+    if label == 0:
+        return None, None, ""
+    span = _qrag_pick(obj, "span", "injection_offset", "attack_span", "char_span")
+    start = end = None
+    if isinstance(span, dict):
+        start = span.get("start", span.get("begin"))
+        end = span.get("end")
+    elif isinstance(span, (list, tuple)) and len(span) >= 2:
+        start, end = span[0], span[1]
+    if start is None:
+        start = _qrag_pick(obj, "start", "attack_start", "inj_start")
+        end = _qrag_pick(obj, "end", "attack_end", "inj_end")
+    if start is not None and end is not None:
+        start, end = int(start), int(end)
+        payload = doc[start:end] if 0 <= start <= end <= len(doc) else ""
+        if attack and payload != attack:
+            # keep offsets if they round-trip; else search
+            if attack in doc:
+                start = doc.index(attack)
+                end = start + len(attack)
+                payload = attack
+        return start, end, payload or attack
+    if attack and attack in doc:
+        start = doc.index(attack)
+        return start, start + len(attack), attack
+    return None, None, attack or ""
+
+
+def _qrag_attack_type(obj: dict, label: int) -> str:
+    if label == 0:
+        return "clean"
+    at = _qrag_pick(obj, "attack_type", "harm_type", "type", "wrapper")
+    if at in ATTACK_TYPES:
+        return at
+    # QuietRAG tiers: 1 loud banners, 2 quiet on-topic, 3 stealth
+    tier = obj.get("tier")
+    try:
+        tier = int(tier)
+    except (TypeError, ValueError):
+        tier = None
+    if tier == 1:
+        return "naive"
+    if tier == 2:
+        return "topic"
+    if tier == 3:
+        fam = str(_qrag_pick(obj, "family", "attack_family", default="")).lower()
+        return "combined" if ("combin" in fam or "mix" in fam) else "fake"
+    if at:
+        return str(at)
+    fam = _qrag_pick(obj, "family", "attack_family", default="unknown")
+    return str(fam)
+
+
+def load_qrag_dataset(cfg, path: str) -> pd.DataFrame:
+    """Load a pre-spanned QuietRAG jsonl as the full Multi-HARM table.
+
+    Does NOT re-wrap attacks (that would undo quiet / mid-document spans).
+    """
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            tag = str(_qrag_pick(obj, "split", "role", "subset", default="")).lower()
+            label = obj.get("label")
+            if label is None:
+                label = 0 if tag in ("negatives", "negative", "clean", "benign") else 1
+            label = int(label)
+            doc = str(_qrag_pick(obj, "document", "passage", "text", "context", default="") or "")
+            query = str(_qrag_pick(obj, "question", "query", default="") or "")
+            attack = str(_qrag_pick(obj, "attack", "injection", "payload", default="") or "")
+            start, end, payload = _qrag_span(obj, doc, attack, label)
+            family = str(_qrag_pick(obj, "family", "attack_family", "goal", default="-") or "-")
+            at = _qrag_attack_type(obj, label)
+            if label == 0:
+                at, payload, start, end = "clean", "", None, None
+            rows.append({
+                "attack_type": at,
+                "goal": family,
+                "passage": doc,
+                "query": query,
+                "injection": payload,
+                "injection_offset": [start, end],
+                "label": label,
+                "tier": obj.get("tier"),
+            })
+    if not rows:
+        raise ValueError(f"no records in {path}")
+    df = pd.DataFrame(rows)
+    df["id"] = [f"{'c' if r.label == 0 else 'i'}{k:05d}" for k, r in df.iterrows()]
+    f = cfg.split_frac
+    shuffled = df.sample(frac=1.0, random_state=cfg.seed).reset_index(drop=True)
+    labels_map = {}
+    for (_, _gl), grp in shuffled.groupby(["attack_type", "goal"], sort=False):
+        n = len(grp)
+        n1 = int(n * f[0])
+        n2 = int(n * f[1])
+        # keep at least 1 test row when n >= 3
+        if n >= 3 and (n - n1 - n2) < 1:
+            n2 = max(0, n2 - 1)
+        lab = ["train"] * n1 + ["val"] * n2 + ["test"] * (n - n1 - n2)
+        if not lab:
+            lab = ["train"] * n
+        for idx, lb in zip(grp.index, lab):
+            labels_map[idx] = lb
+    shuffled["split"] = [labels_map[i] for i in shuffled.index]
+    n_ok = 0
+    inj = shuffled[shuffled["label"] == 1]
+    for _, r in inj.iterrows():
+        s, e = r["injection_offset"]
+        if s is None or e is None:
+            continue
+        if r["passage"][int(s):int(e)] == r["injection"]:
+            n_ok += 1
+    print(f"  QuietRAG {path}: {len(shuffled)} rows "
+          f"(inj={int((shuffled.label==1).sum())} clean={int((shuffled.label==0).sum())})")
+    print(f"  span round-trip OK {n_ok}/{len(inj)}")
+    print(f"  types: {active_types(shuffled)}")
+    return shuffled[["id", "split", "attack_type", "goal", "passage", "query",
+                     "injection", "injection_offset", "label"]]
+
+
 def build_dataset(cfg) -> pd.DataFrame:
-    """Full 2000-sample dataset (or test-mode sizes) with split column."""
+    """Full dataset (MS-MARCO wrap or QuietRAG jsonl)."""
+    qpath = find_qrag_jsonl(getattr(cfg, "qrag_jsonl", "") or "")
+    if qpath:
+        print(f"Loading QuietRAG from {qpath} (pre-spanned, not template-wrapped) ...")
+        return load_qrag_dataset(cfg, qpath)
+
     base = load_clean_pairs(cfg)
     rng = np.random.default_rng(cfg.seed)
     n_clean = cfg.n_clean

@@ -76,12 +76,31 @@ def head_ratio(mass: tuple, eps: float = 1e-6, widths: tuple | None = None) -> f
     return (m_qi / w_i) / (m_r / w_r + eps)
 
 
-def zscore(x: np.ndarray) -> np.ndarray:
+def zscore(x: np.ndarray):
+    x = np.asarray(x, dtype=float)
     mu = float(x.mean())
     sd = float(x.std())
     if sd < 1e-12:
         sd = 1.0
     return (x - mu) / sd, mu, sd
+
+
+def fuse(alpha: float, zr, zp):
+    """S = alpha * z(R) + (1-alpha) * z(P).
+
+    ``0 * inf`` is NaN in IEEE; when alpha is 0 or 1 we skip the unused
+    half so a perfect residual probe (alpha=0) does not wipe the score.
+    """
+    zr = np.nan_to_num(np.asarray(zr, dtype=float), nan=0.0, posinf=1e6, neginf=-1e6)
+    zp = np.nan_to_num(np.asarray(zp, dtype=float), nan=0.0, posinf=1e6, neginf=-1e6)
+    a = float(alpha)
+    if a <= 0.0:
+        out = zp
+    elif a >= 1.0:
+        out = zr
+    else:
+        out = a * zr + (1.0 - a) * zp
+    return out if out.ndim else float(out)
 
 
 # ---------------------------------------------------------------------------
@@ -223,10 +242,10 @@ def choose_alpha(r_scores: np.ndarray, p_scores: np.ndarray, labels: np.ndarray,
     curve = {}
     a = 0.0
     while a <= 1.0 + 1e-9:
-        s = a * zr + (1 - a) * zp
+        s = fuse(a, zr, zp)
         au = auroc(labels, s)
         curve[round(a, 2)] = float(au)
-        if au > best[1]:
+        if au == au and au > best[1]:
             best = (round(a, 2), au)
         a += step
     return {"alpha": float(best[0]), "auroc": float(best[1]), "curve": curve,

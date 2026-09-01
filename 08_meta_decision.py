@@ -37,7 +37,7 @@ def main():
     df = pd.read_parquet(os.path.join(cfg.data_dir, "dataset.parquet"))
     specs = load_json(os.path.join(cfg.out_dir, "calib", "specialists.json"))
     gen = load_json(os.path.join(cfg.out_dir, "calib", "general.json"))
-    type_specs = [specs[t] for t in ["topic", "naive", "fake", "combined"]]
+    type_specs = [specs[t] for t in specs if t != "general"]
 
     print("=== META-DECISION EVALUATION (VAL split) ===")
     ev = evaluate_meta(type_specs, gen, df, cache, "val",

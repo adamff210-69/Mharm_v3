@@ -18,6 +18,7 @@ import pandas as pd
 sys.path.insert(0, ".")
 from config import load_config
 from multi_harm_common.calibrate import calibrate_specialist
+from multi_harm_common.dataset import active_types
 from multi_harm_common.io_utils import load_json, save_json
 from multi_harm_common.sigcache import load_cache
 
@@ -33,6 +34,8 @@ def main():
     hstar = load_json(hstar_path)
     cache = load_cache(cfg.data_dir)
     df = pd.read_parquet(os.path.join(cfg.data_dir, "dataset.parquet"))
+    global TYPES
+    TYPES = active_types(df) or TYPES
 
     specs = {}
     for t in TYPES:

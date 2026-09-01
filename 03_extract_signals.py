@@ -14,6 +14,7 @@
 
 Run:
   python 03_extract_signals.py                  # full extraction (default)
+  python 03_extract_signals.py --limit 8        # smoke: 8 mixed rows then STOP
   python 03_extract_signals.py --quant-compare  # §2.3 comparison only
   python 03_extract_signals.py --validate-only  # just re-run the §2.0 gate
 """

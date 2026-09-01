@@ -253,6 +253,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--quant-compare", action="store_true")
     ap.add_argument("--validate-only", action="store_true")
+    ap.add_argument("--limit", type=int, default=0,
+                    help="smoke: extract at most N mixed (inj+clean) rows")
+    ap.add_argument("--include-clean", action="store_true",
+                    help="kept for runbooks; extraction already includes clean rows")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -263,6 +267,20 @@ def main():
         print("dataset.parquet missing — run 02_build_dataset.py first.")
         sys.exit(1)
     df = pd.read_parquet(os.path.join(cfg.data_dir, "dataset.parquet"))
+    if args.limit and args.limit > 0:
+        inj = df[df["label"] == 1]
+        cln = df[df["label"] == 0]
+        n = min(int(args.limit), len(df))
+        n_cln = min(len(cln), max(1, n // 4)) if len(cln) else 0
+        n_inj = min(len(inj), n - n_cln)
+        parts = []
+        if n_inj:
+            parts.append(inj.sample(n_inj, random_state=cfg.seed))
+        if n_cln:
+            parts.append(cln.sample(n_cln, random_state=cfg.seed))
+        df = pd.concat(parts).sample(frac=1.0, random_state=cfg.seed)
+        print(f"  --limit {n}: using {len(df)} rows "
+              f"(inj={int((df.label==1).sum())} clean={int((df.label==0).sum())})")
 
     model, tokenizer, device, quant = load_model(cfg)
     if args.validate_only:

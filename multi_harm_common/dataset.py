@@ -133,8 +133,11 @@ def _synthetic_pairs(cfg) -> pd.DataFrame:
         "What was prioritized in the planning cycle?",
         "When was the audit published?",
     ]
+    # deliberately index-arithmetic, not sampling: the pool is a pure function of
+    # (topics, sentences, queries, cfg.seed-free), so two machines get byte-identical
+    # datasets. v3.0 built an rng here and never used it, which made the pool look
+    # seeded when nothing consumed it.
     rows = []
-    rng = np.random.default_rng(cfg.seed)
     i = 0
     while len(rows) < cfg.n_base_pairs:
         t = topics[i % len(topics)]

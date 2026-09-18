@@ -358,6 +358,7 @@ def calib_size_sweep(cfg, cache, df, hstar, sizes=(40, 80, 160)):
     import dataclasses
     rows = []
     n_heads = max(h for (_, h) in next(iter(cache.masses.values()))) + 1
+    n_layers_cached = max(l for (l, _) in next(iter(cache.masses.values()))) + 1
     for size in sizes:
         c2 = dataclasses.replace(cfg, calib_per_specialist=int(size),
                                  calib_h_samples=int(size))
@@ -365,6 +366,13 @@ def calib_size_sweep(cfg, cache, df, hstar, sizes=(40, 80, 160)):
             sp = calibrate_specialist(t, df, cache, c2, hstar,
                                       use_shared_head=False, seed=cfg.seed + 7)
             ev = score_spec_on_split(sp, df, cache, "test", cfg.epsilon)
+            # a head outside the cached grid would score every sample with the
+            # same epsilon-floored value and still hand back an AUROC
+            if not (0 <= sp["head"][0] < n_layers_cached
+                    and 0 <= sp["head"][1] < n_heads):
+                raise RuntimeError(
+                    f"specialist '{t}' selected head {sp['head']} outside the "
+                    f"cached {n_layers_cached}x{n_heads} grid")
             rows.append({
                 "calib_n": int(size), "type": t,
                 "L_star": sp["L_star"], "head": f"{sp['head'][0]}x{sp['head'][1]}",
@@ -525,7 +533,12 @@ def main():
     # injected rows, and which type each head prefers.
     try:
         hv = df[(df["split"] == "val") & (df["label"] == 1)]["id"].tolist()
+        if not hv:
+            raise RuntimeError("no val injected rows in the extracted cache — the "
+                               "cross-tab has nothing to summarize")
         sub = cache.subset(hv)
+        if not sub["ids"]:
+            raise RuntimeError("cache.subset returned no rows for the val ids")
         heads = sorted(sub["masses"][0].keys())        # (layer, head) -> (m_qp, m_qi, m_qq)
         acc = {t: np.zeros(len(heads)) for t in TYPES}
         cnt = {t: 0 for t in TYPES}
@@ -571,7 +584,11 @@ def main():
             print(f"  calibration's head IS its own type's argmax: "
                   f"{out43['selected_head_is_own_type_argmax']}")
     except Exception as e:
-        print(f"  §4.3 head-by-type dump skipped: {type(e).__name__}: {e}")
+        # a skipped diagnostic must never look like a clean run: v3.0's worst bug
+        # hid inside `except Exception: return 0.5`
+        import traceback
+        print(f"  §4.3 head-by-type dump SKIPPED: {type(e).__name__}: {e}")
+        print("   " + traceback.format_exc().strip().splitlines()[-3])
 
     print("\n=== §4.4 — cross-specialist generalization (val injected) ===")
     mat44 = sec_44_cross(cfg, cache, df, specs)

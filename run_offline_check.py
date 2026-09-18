@@ -138,7 +138,7 @@ def plant(df: pd.DataFrame, root: str, chunk_rows: int = 25) -> int:
     # 11 archives this and asserts on it, so the fixture has to write one too
     sigcache.save_provenance({
         "written_by": "run_offline_check.plant",
-        "model_id": "offline-fixture",
+        "model_name": "offline-fixture",
         "quant": "fp32",
         "n_model_layers": max(ATTN_LAYERS) + 1,
         "query_layers": list(ATTN_LAYERS),

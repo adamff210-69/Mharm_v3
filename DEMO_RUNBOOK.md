@@ -5,10 +5,20 @@ Reduced-size real-data run: **400 clean MS-MARCO + 400 injected
 4-bit (nf4). Same pipeline, same code as the full 2,000-sample run —
 only the dataset size changes (env vars in `demo_env.sh`).
 
-**Before you touch the T4**, run `python run_offline_check.py` on any machine
-(CPU, no downloads): it exercises stages 02 and 04–11 against a planted signal
-cache and fails loudly on the classes of bug that would otherwise cost you a
-GPU session to discover.
+**Before you touch the T4**, run both no-GPU checks on any machine (CPU, no
+downloads): `python run_offline_check.py` (stages 02 + 04–11 against a planted
+signal cache) and `python run_tiny_model_check.py --full` (stages 01–11 against a
+locally built random-init Llama model — this is what exercises `03`'s extraction,
+gates, cache writer and staleness guard without a download). Each fails loudly on
+the classes of bug that would otherwise cost you a GPU session: the tiny-model
+check is what found `03`'s `AttributeError` on `sigcache.parquet_rows` and its
+`cfg.model_id` reference, both of which would have surfaced after hours of
+extraction, and the offline check is what found the `roc_auc_score(pos_label=...)`
+bug that made every v3.0 AUROC a constant 0.5.
+
+**Kaggle instead of Colab?** `KAGGLE.md` + `demo_kaggle.ipynb` cover the four
+things that differ (don't reinstall torch over Kaggle's, HF token or the ungated
+swap, env vars set once in the kernel, and the Save-Version resume recipe).
 
 **Integrity line to use at the review:** *"These numbers are from the
 800-sample pilot run; the full 2,000-sample run is queued for this

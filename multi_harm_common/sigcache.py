@@ -27,7 +27,9 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .io_utils import ParquetSinker
+from .io_utils import (ParquetSinker, parquet_rows)  # parquet_rows is re-exported
+# for `sigcache.parquet_rows(...)`, the call 03 uses to decide whether an existing
+# cache has anything in it before trusting its provenance record.
 
 # Bump when the *meaning* of cached columns changes, so a cache written by an
 # older definition cannot be silently reused (see load_cache's error text).
@@ -60,12 +62,44 @@ def configure(data_dir: str, chunk_rows: int = 200) -> None:
     os.makedirs(sigdir, exist_ok=True)
     prior = _read_schema(sigdir)
     if prior is not None and prior != SCHEMA_VERSION:
+        # Two different failures, two different fixes. An OLDER cache can be
+        # rebuilt by this code. A NEWER cache means the checkout is behind the
+        # data — rebuilding here would overwrite someone's newer work, so say
+        # which knob to move instead of demanding a delete.
+        if prior > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"data/signals was written by a NEWER extraction schema "
+                f"(v{prior} > this code's v{SCHEMA_VERSION}). The columns would be "
+                f"read with the wrong meaning. Check out the code that wrote it "
+                f"(this build writes v{SCHEMA_VERSION}), or delete data/signals "
+                f"and re-extract here — do NOT force it with --fresh until you "
+                f"know which schema the numbers in out/ were produced under.")
         raise RuntimeError(
             f"data/signals was extracted with schema v{prior}, this code writes "
             f"v{SCHEMA_VERSION}. Delete data/signals and out/progress/extract.json "
-            f"and re-run 03_extract_signals.py.")
+            f"(or run 03_extract_signals.py --fresh) and re-extract.")
     with open(os.path.join(sigdir, _SCHEMA_NAME), "w") as f:
         json.dump({"schema_version": SCHEMA_VERSION}, f, indent=2)
+
+
+def current_fingerprint(data_dir: str) -> dict:
+    """The fingerprint `02` writes next to the dataset (sha256 of the parquet plus
+    the sizes/taxonomy that produced it). Reading it is enough for staleness:
+    `03` stores a copy with the cache, so a foreign cache is detectable without
+    re-hashing a 200 MB file on every launch."""
+    try:
+        with open(os.path.join(data_dir, "dataset_fingerprint.json")) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def fingerprint_diff(prior: dict, now: dict) -> dict:
+    """Which settings changed, so the abort message names them instead of just
+    saying 'mismatch'."""
+    keys = sorted(set(prior) | set(now))
+    return {k: [prior.get(k), now.get(k)] for k in keys
+            if prior.get(k) != now.get(k)}
 
 
 def provenance_path(data_dir: str) -> str:

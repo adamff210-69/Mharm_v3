@@ -35,7 +35,8 @@ from multi_harm_common import signals as S
 from multi_harm_common.chat import encode_sample, validate_token_ranges
 from multi_harm_common.io_utils import Checkpoint, save_json, ensure_dir
 from multi_harm_common.metrics import auroc, pearson
-from multi_harm_common.model import forward_signals, get_n_layers, load_model
+from multi_harm_common.model import (forward_signals, get_n_heads,
+                                    get_n_layers, load_model)
 from multi_harm_common import sigcache
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -47,7 +48,6 @@ sys.stdout.reconfigure(line_buffering=True)
 
 def run_validation_gate(cfg, tokenizer, df):
     print("\n=== §2.0 TOKEN-RANGE VALIDATION GATE ===")
-    rng = np.random.default_rng(cfg.seed)
     picks = []
     for t in ["clean", "topic", "naive", "fake", "combined"]:
         sub = df[df["attack_type"] == t]
@@ -77,7 +77,7 @@ def run_validation_gate(cfg, tokenizer, df):
 # Full extraction
 # ===========================================================================
 
-def extract_all(cfg, model, tokenizer, df):
+def extract_all(cfg, model, tokenizer, df, quant="?"):
     n_layers = get_n_layers(model)
     cand = cfg.candidate_layers(n_layers)
     # Buffered chunked writes: rows are held in memory `chunk_rows` at a time
@@ -142,9 +142,10 @@ def extract_all(cfg, model, tokenizer, df):
     # many rows were dropped, and which dataset the ids came from
     sigcache.save_provenance({
         "written_by": "03_extract_signals.py",
-        "model_id": cfg.model_id,
+        "model_name": cfg.model_name,
         "quant": quant,
         "n_model_layers": n_layers,
+        "n_model_heads": get_n_heads(model),
         "n_query_layers": len(cand),
         "query_layers": list(cand),
         "attn_last_k": cfg.attn_last_k,
@@ -154,7 +155,7 @@ def extract_all(cfg, model, tokenizer, df):
         "n_clipped": len(clipped),
         "max_seq_len": cfg.max_seq_len,
         "tail_len": cfg.tail_len,
-        "dataset_fingerprint": sigcache.dataset_fingerprint(cfg, df, quant),
+        "dataset_fingerprint": sigcache.current_fingerprint(cfg.data_dir),
     }, cfg.data_dir)
     dt = (time.time() - t0) / 60
     print(f"Extraction complete in {dt:.1f} min "
@@ -231,7 +232,6 @@ def run_quant_compare(cfg, df):
                   os.path.join(cfg.out_dir, "experiments", "quant_compare.json"))
         return
 
-    rng = np.random.default_rng(cfg.seed)
     ids = []
     for t in ["clean", "topic", "naive", "fake", "combined"]:
         sub = df[df["attack_type"] == t]
@@ -304,6 +304,11 @@ def run_quant_compare(cfg, df):
     print("  Saved out/experiments/quant_compare.json")
 
 
+def _fmt_diff(diff: dict) -> str:
+    """field: what the cache was built with -> what is on disk now."""
+    return ", ".join(f"{k} {a!r}->{b!r}" for k, (a, b) in diff.items())
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--quant-compare", action="store_true")
@@ -337,16 +342,20 @@ def main():
         prior = sigcache.load_provenance(cfg.data_dir)
         have = sigcache.parquet_rows(os.path.join(cfg.data_dir, "signals",
                                                   "signals.parquet"))
-        if prior.get("dataset_fingerprint") and have > 0:
-            now = sigcache.dataset_fingerprint(cfg, df, quant)
-            if prior["dataset_fingerprint"] != now:
-                diff = sorted(k for k in now
-                              if now[k] != prior["dataset_fingerprint"].get(k))
+        now = sigcache.current_fingerprint(cfg.data_dir)
+        if not now:
+            print("  NOTE: no data/dataset_fingerprint.json — cache staleness "
+                  "cannot be checked (run 02 to write it), so only the schema "
+                  "marker applies here.")
+        elif prior.get("dataset_fingerprint") and have > 0:
+            diff = sigcache.fingerprint_diff(prior["dataset_fingerprint"], now)
+            if diff:
                 raise RuntimeError(
                     f"data/signals holds {have} rows extracted from a DIFFERENT "
-                    f"dataset (fields that changed: {diff}). The checkpoint would "
-                    f"mark the new samples done and they would silently be missing "
-                    f"from 04-11. Re-run with --fresh.")
+                    f"dataset (changed: {_fmt_diff(diff)}). The checkpoint keys on "
+                    f"sample id, so regenerated ids would be marked done while "
+                    f"their signals are absent — every later stage would silently "
+                    f"run on a shrunken set. Re-run with --fresh.")
 
     model, tokenizer, device, quant = load_model(cfg)
     if args.validate_only:
@@ -357,7 +366,7 @@ def main():
         _free(model)
         run_quant_compare(cfg, df)
         return
-    extract_all(cfg, model, tokenizer, df)
+    extract_all(cfg, model, tokenizer, df, quant)
 
 
 if __name__ == "__main__":

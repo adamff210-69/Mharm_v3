@@ -157,7 +157,26 @@ the config class and the attributes tried, plus `get_n_heads()`.
 
 ## New: what was added to catch this class of bug
 
-* **`run_offline_check.py`** — end-to-end integration check for stages `02` and
+* **`run_tiny_model_check.py`** — the model stages, executed with no GPU and no
+  download: a random-init 6×4 `LlamaForCausalLM` and a byte-level BPE trained on
+  the dataset are written to a temp dir and used as `MULTI_HARM_MODEL_NAME`, so
+  `01`'s architecture/AUROC gates and `03`'s §2.0 gate, extraction, checkpointing,
+  provenance write and **dataset-staleness abort** all actually run, and `04`–`11`
+  then run on real attention matrices (`--full`). It asserts the cache shape equals
+  `attn_last_k × n_heads` from the model's own config, that `m_qi ≤ m_qp` for every
+  head (the first thing a span/clipping mismatch breaks), that the tokenizer
+  round-trips its corpus (so a gate failure means the pipeline, not the fixture),
+  and that a foreign cache is refused while `--fresh` rebuilds it.
+  **This check is what made v3.1 actually correct**: it found four bugs that
+  static review had missed — `03` calling `sigcache.parquet_rows` (the helper lives
+  in `io_utils`; would have aborted `03` on launch), `03` writing
+  `cfg.model_id` into provenance (the field is `model_name`; would have aborted
+  *after* a full extraction), `model.py`'s clip reading `enc.input_len`
+  (`Encoding.n_tokens`), and a `write_text(s)` placed before `ast.parse(s)` in the
+  harness itself, which had left `run_offline_check.py` truncated on disk.
+* **`09`'s §4.3 dump no longer swallows its own failures** — a skipped diagnostic
+  prints the exception class, message and last frame, and raises if the val split
+  has no injected rows, because "silently absent" is how the `pos_label` bug hid.
   `04`–`11` with **no model, no GPU, no download**: it builds the real dataset,
   fabricates a signal cache with *planted* structure (each attack type visible only
   on its own head, width independent of intensity, weak-but-real residual signal)

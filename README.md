@@ -43,6 +43,8 @@ attention signal's reported cross-attack generalization.
 | `08_meta_decision.py` | Meta layer evaluated on val; FPR criterion check; `global_max` alternative threshold |
 | `09_experiments_analysis.py` | Tables A–E, §4.3 (pairwise ρ), §4.4 (cross-specialist), §4.8 spine table, latency, `SUMMARY.md` with the success-criteria check. `--calib-sweep` re-calibrates every specialist at calib_n 40/80/160 |
 | `run_offline_check.py` | **No-GPU integration check** for `02` + `04`–`11`: plants a synthetic signal cache and asserts the pipeline recovers it (see below) |
+| `run_tiny_model_check.py` | **No-network, no-GPU check of the model stages** (`01`, `03`) and then `04`–`11`, against a locally built random-init Llama-architecture model |
+| `demo_kaggle.ipynb` / `KAGGLE.md` | Kaggle kernel staging (settings, torch/bitsandbytes caveat, resume recipe) |
 | `CHANGELOG.md` | Every v3.0 → v3.1 change, with the reason |
 | `10_figures_report.py` | All figures + `out/report/RESULTS.md` (§4.8 lead table, **§4.9 BAGEL/Luna-2 differentiation table** with citations, novelty claim, limitations) |
 | `11_reproducibility.py` | `REPRODUCIBILITY.md` + zip (code, config, hashes, results) |
@@ -117,10 +119,24 @@ overrides:
 Two checks, in this order. Both must pass before you spend T4 hours.
 
 ```bash
-python run_offline_check.py                 # 1. stages 02 + 04-11, no model
-python run_offline_check.py --stage-only 09 #    one stage, for iterating
-python run_smoke_test.py                    # 2. the same plus 03, using gpt2
+python run_offline_check.py                  # 1. stages 02 + 04-11, no model at all
+python run_offline_check.py --stage-only 09  #    one stage, for iterating
+python run_tiny_model_check.py --full        # 2. stages 01-11, real forward pass,
+                                             #    no download (~1 min, CPU)
+python run_smoke_test.py                     # 3. the same with gpt2 (~500 MB dl)
 ```
+
+`run_tiny_model_check.py` is the one to run on a machine with torch but no
+network, or before a Colab/Kaggle session: it builds a random-init 6-layer ×
+4-head `LlamaForCausalLM` plus a byte-level BPE tokenizer trained on the dataset,
+saves them to a temp dir and points `MULTI_HARM_MODEL_NAME` at it, so `01`'s
+shape gate, `03`'s §2.0 gate, the chunked cache writer, checkpointing, the
+provenance record **and the staleness guard** all actually execute — including
+`04`–`11` on genuine attention matrices. It asserts the cache holds
+`attn_last_k × n_heads` mass rows per sample, that `m_qi <= m_qp` for every head
+(which is what a span/clipping mismatch breaks first), and that a cache from a
+different dataset is refused rather than silently reused. It exits 0 with a note
+when torch is unavailable, so it is safe to leave in any environment.
 
 `run_offline_check.py` is the one that earns its keep: it builds the real dataset,
 writes a **fabricated signal cache with planted structure** through the production

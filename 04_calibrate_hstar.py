@@ -18,14 +18,25 @@ import pandas as pd
 sys.path.insert(0, ".")
 from config import load_config
 from multi_harm_common.calibrate import calibrate_pooled_hstar
-from multi_harm_common.io_utils import load_json, save_json
-from multi_harm_common.sigcache import load_cache
+from multi_harm_common.io_utils import save_json
+from multi_harm_common.sigcache import load_cache, usable_df
 
 
 def main():
     cfg = load_config()
+    print(f"Multi-HARM v{cfg.version}")
+    from multi_harm_common.metrics import auroc_selftest
+    st = auroc_selftest()
+    print(f"  AUROC self-test: {'OK' if st['ok'] else 'FAILED'} "
+          f"(perfect={st['perfect_separation']:.3f} inverted={st['inverted_separation']:.3f})")
+    if not st["ok"]:
+        print("FATAL: the AUROC metric is not computing (a constant 0.5 here means "
+              "every head/layer/alpha selection and every table in this project is "
+              "meaningless). Fix multi_harm_common/metrics.py before calibrating.")
+        sys.exit(1)
     cache = load_cache(cfg.data_dir)
-    df = pd.read_parquet(os.path.join(cfg.data_dir, "dataset.parquet"))
+    df = usable_df(pd.read_parquet(os.path.join(cfg.data_dir, "dataset.parquet")),
+                   cache)
     n_heads = max(h for (_, h) in next(iter(cache.masses.values()))) + 1
     print(f"Signals loaded: {len(cache.meta)} samples, "
           f"layers {cache.layers}, heads 0..{n_heads - 1}")

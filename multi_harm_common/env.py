@@ -6,10 +6,24 @@ import platform
 import sys
 
 import numpy as np
-import torch
+
+try:                                    # torch is only needed by stages 01/03
+    import torch
+except Exception:                       # noqa: BLE001 - import errors vary
+    torch = None
+
+
+def require_torch(where: str = "this stage") -> None:
+    if torch is None:
+        raise RuntimeError(
+            f"{where} needs torch, which is not installed here. Model stages are "
+            f"01_setup_and_validate.py and 03_extract_signals.py; 02 and every "
+            f"stage from 04 on run without torch (see run_offline_check.py).")
 
 
 def pick_device() -> str:
+    if torch is None:
+        return "cpu"
     if torch.cuda.is_available():
         return "cuda"
     if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
@@ -19,6 +33,8 @@ def pick_device() -> str:
 
 def resolve_quant(quant: str, device: str) -> str:
     """'auto' -> nf4 on CUDA, fp16 on MPS, fp32 on CPU."""
+    if torch is None:
+        return "fp32"
     if quant and quant != "auto":
         return quant
     if device == "cuda":
@@ -28,7 +44,8 @@ def resolve_quant(quant: str, device: str) -> str:
     return "fp32"
 
 
-def dtype_for(quant: str, device: str) -> torch.dtype:
+def dtype_for(quant: str, device: str):
+    require_torch("dtype_for")
     return {
         "fp16": torch.float16,
         "bf16": torch.bfloat16,
@@ -39,6 +56,7 @@ def dtype_for(quant: str, device: str) -> torch.dtype:
 
 
 def bnb_config_for(quant: str):
+    require_torch("bnb_config_for")
     if quant == "nf4":
         from transformers import BitsAndBytesConfig
         return BitsAndBytesConfig(
@@ -57,10 +75,10 @@ def gpu_summary() -> dict:
     out = {
         "python": sys.version.split()[0],
         "platform": platform.platform(),
-        "torch": torch.__version__,
-        "cuda_available": torch.cuda.is_available(),
+        "torch": (torch.__version__ if torch is not None else "not installed"),
+        "cuda_available": bool(torch is not None and torch.cuda.is_available()),
     }
-    if torch.cuda.is_available():
+    if torch is not None and torch.cuda.is_available():
         p = torch.cuda.get_device_properties(0)
         out["gpu_name"] = p.name
         out["gpu_mem_gb"] = round(p.total_memory / 1e9, 2)
@@ -100,7 +118,10 @@ def print_env(cfg, device: str, quant: str) -> dict:
     print("=" * 78)
     for k, v in s.items():
         print(f"  {k:22s}: {v}")
-    if device == "cpu" and not cfg.test_mode:
+    if torch is None:
+        print("  NOTE: torch is not installed — model stages (01, 03) will not "
+              "run here; stages 02 and 04-11 do not need it.")
+    if device == "cpu" and torch is not None and not cfg.test_mode:
         print("  WARNING: running on CPU outside test mode. Use MULTI_HARM_TEST_MODE=true")
         print("           for CPU runs or move to a GPU machine.")
     return s

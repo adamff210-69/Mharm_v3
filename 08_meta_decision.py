@@ -26,7 +26,7 @@ from config import load_config
 from multi_harm_common.detect import evaluate_meta, score_spec_on_split
 from multi_harm_common.io_utils import load_json, save_json
 from multi_harm_common.signals import choose_theta
-from multi_harm_common.sigcache import load_cache
+from multi_harm_common.sigcache import load_cache, usable_df
 
 
 def main():
@@ -34,7 +34,8 @@ def main():
     from multi_harm_common.io_utils import ensure_dir
     ensure_dir(os.path.join(cfg.out_dir, "meta"))
     cache = load_cache(cfg.data_dir)
-    df = pd.read_parquet(os.path.join(cfg.data_dir, "dataset.parquet"))
+    df = usable_df(pd.read_parquet(os.path.join(cfg.data_dir, "dataset.parquet")),
+                   cache)
     specs = load_json(os.path.join(cfg.out_dir, "calib", "specialists.json"))
     gen = load_json(os.path.join(cfg.out_dir, "calib", "general.json"))
     type_specs = [specs[t] for t in ["topic", "naive", "fake", "combined"]]

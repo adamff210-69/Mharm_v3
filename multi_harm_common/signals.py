@@ -121,24 +121,36 @@ def select_h_star(masses_by_sample: list[dict], widths_by_sample: list[tuple],
 # Residual-half signal: L* selection + linear probe
 # ---------------------------------------------------------------------------
 
-def select_l_star(hid_by_sample: list[dict], labels: np.ndarray,
-                  candidate_layers: list[int], fit_frac: float = 0.7
-                  ) -> dict:
-    """Per-layer linear-probe AUROC (probe fit on fit_frac of calibration,
-    evaluated on the held-out remainder — no optimistic bias)."""
-    n = len(hid_by_sample)
+def fit_eval_split(n: int, fit_frac: float) -> tuple[np.ndarray, np.ndarray]:
+    """Deterministic fit/eval split of a calibration set (seeded, so re-runs
+    pick the same L* given the same signals)."""
     idx = np.arange(n)
     rng = np.random.default_rng(0)
     rng.shuffle(idx)
     n_fit = max(10, int(n * fit_frac))
-    fit, eval_ = idx[:n_fit], idx[n_fit:]
+    return idx[:n_fit], idx[n_fit:]
 
-    out = {"per_layer": {}}
+
+def select_l_star(hid_by_sample: list[dict], labels: np.ndarray,
+                  candidate_layers: list[int], fit_frac: float = 0.7
+                  ) -> dict:
+    """Per-layer linear-probe AUROC (probe fit on fit_frac of calibration,
+    evaluated on the held-out remainder — no optimistic bias).
+
+    The StandardScaler is fit on the SAME fraction as the probe: scaling with
+    statistics computed over the held-out rows leaks them into selection and
+    quietly flatters whichever layer happens to separate best, which is exactly
+    the number L* is chosen by."""
+    n = len(hid_by_sample)
+    fit, eval_ = fit_eval_split(n, fit_frac)
+
+    idx = np.arange(n)
+    out = {"per_layer": {}, "n_fit": int(len(fit)), "n_eval": int(len(eval_))}
     for l in candidate_layers:
         X = np.array([hid_by_sample[i][l] for i in idx])
         y = (labels[idx] == 1).astype(int)
-        scaler = StandardScaler()
-        Xs = scaler.fit_transform(X)
+        scaler = StandardScaler().fit(X[fit])
+        Xs = scaler.transform(X)
         clf = LogisticRegression(max_iter=2000, C=1.0)
         clf.fit(Xs[fit], y[fit])
         if len(eval_) < 2:
@@ -153,31 +165,77 @@ def select_l_star(hid_by_sample: list[dict], labels: np.ndarray,
 
 
 def fit_probe(hid_by_sample: list[dict], labels: np.ndarray, layer: int,
-              fit_frac: float = 0.7) -> tuple[dict, float]:
-    """Fit the probe used at inference. Returns (probe_params, fit_auroc).
+              fit_frac: float = 0.7) -> tuple[dict, dict]:
+    """Fit the probe used at inference. Returns (probe_params, report).
 
-    probe_params: {coef, bias, mean, std} — enough to score new samples.
+    probe_params: {coef, bias, mean, std} — enough to score new samples. Both
+    the scaler and the classifier see the fit fraction only, so the reported
+    ``eval_auroc`` (held-out remainder) is an honest generalization estimate
+    and is what the fusion/threshold steps should be compared against;
+    ``fit_auroc`` is in-sample and only a sanity/overfit check.
     """
     n = len(hid_by_sample)
     X = np.array([hid_by_sample[i][layer] for i in range(n)])
     y = (labels == 1).astype(int)
-    idx = np.arange(n)
-    rng = np.random.default_rng(0)
-    rng.shuffle(idx)
-    n_fit = max(10, int(n * fit_frac))
-    fit = idx[:n_fit]
-    scaler = StandardScaler()
-    Xs = scaler.fit_transform(X)
+    fit, eval_ = fit_eval_split(n, fit_frac)
+    scaler = StandardScaler().fit(X[fit])
+    Xs = scaler.transform(X)
     clf = LogisticRegression(max_iter=2000, C=1.0)
     clf.fit(Xs[fit], y[fit])
     proba = clf.predict_proba(Xs)[:, 1]
-    a = auroc(y, proba)
+    eval_auroc = (auroc(y[eval_], proba[eval_]) if len(eval_) >= 2
+                  else auroc(y, proba))
     params = {"layer": int(layer),
               "coef": clf.coef_[0].tolist(),
               "bias": float(clf.intercept_[0]),
               "mean": scaler.mean_.tolist(),
               "std": scaler.scale_.tolist()}
-    return params, float(a)
+    report = {"fit_auroc": float(auroc(y[fit], proba[fit])),
+              "eval_auroc": float(eval_auroc),
+              "n_fit": int(len(fit)), "n_eval": int(len(eval_))}
+    return params, report
+
+
+def crossfit_probs(hid_by_sample: list[dict], labels: np.ndarray, layer: int,
+                   n_folds: int = 2) -> tuple[np.ndarray, dict]:
+    """Out-of-fold P(injection) on the calibration set, and a report.
+
+    Why this exists: the deployed probe is a logistic regression on a 4096-dim
+    last-token vector fit on ~70% of 160 samples, so its IN-SAMPLE probabilities
+    are far more extreme (and far more separable) than what it produces on new
+    data. Choosing the fusion weight alpha and the z-stats/theta from those
+    in-sample scores biases alpha toward whichever half overfits the calibration
+    set, and leaves the residual half's scale mismatched against inference. This
+    is exactly the failure the pipeline can hit on a real run.
+
+    Instead: split the calibration set, fit the same probe recipe on all folds
+    but one, and score the held-out fold. alpha, p_mu/p_sd and theta are then
+    tuned on scores with roughly the distribution they will actually see.
+    """
+    n = len(hid_by_sample)
+    X = np.array([h[layer] for h in hid_by_sample], dtype=float)
+    y = (labels == 1).astype(int)
+    idx = np.arange(n)
+    np.random.default_rng(0).shuffle(idx)
+    folds = np.array_split(idx, max(2, int(n_folds)))
+    probs = np.full(n, 0.5, dtype=float)
+    per_fold = []
+    for k, te in enumerate(folds):
+        tr = np.concatenate([f for j, f in enumerate(folds) if j != k])
+        if len(np.unique(y[tr])) < 2:
+            per_fold.append({"n_eval": int(len(te)), "auroc": None,
+                             "reason": "training fold is single-class"})
+            continue
+        scaler = StandardScaler().fit(X[tr])
+        clf = LogisticRegression(max_iter=2000, C=1.0).fit(scaler.transform(X[tr]),
+                                                            y[tr])
+        probs[te] = clf.predict_proba(scaler.transform(X[te]))[:, 1]
+        per_fold.append({"n_eval": int(len(te)),
+                         "auroc": float(auroc(y[te], probs[te]))})
+    return probs, {"n_folds": int(max(2, int(n_folds))), "per_fold": per_fold,
+                   "oof_auroc": float(auroc(y, probs)),
+                   "insample_note": "compare against calib.probe_fit_auroc for "
+                                    "the overfitting gap"}
 
 
 def probe_probs(hid: np.ndarray, probe: dict) -> np.ndarray:
@@ -248,11 +306,25 @@ def choose_theta(scores: np.ndarray, labels: np.ndarray,
             cand = (theta, f1, tpr, fpr)
             if best is None or cand[1] > best[1]:
                 best = cand
+    feasible = best is not None
     if best is None:
-        # every threshold violates the budget -> pick lowest-FPR operating point
+        # No threshold meets the FPR budget (typical when the calibration set
+        # has fewer negatives than 1/budget). Fall back to "never fire" rather
+        # than silently borrowing an FPR-violating point, and SAY so: a type
+        # specialist with infeasible theta can never attribute its own type, so
+        # that type is only caught by the general fallback.
         theta = float(scores.max() + 1e-9)
         best = (theta, 0.0, 0.0, 0.0)
     theta, f1, tpr, fpr = best
+    # If the calibration set has fewer negatives than 1/budget, the only
+    # admissible operating points are the zero-false-positive ones, so theta
+    # becomes a single extreme order statistic of a handful of clean scores —
+    # which is why a pilot run's test FPR can be far off target while the code is
+    # behaving exactly as specified. Report it instead of letting it be a mystery.
+    res_limited = n_neg * fpr_budget < 1.0
     return {"theta": theta, "f1_at_theta": float(f1),
             "tpr_at_theta": float(tpr), "fpr_at_theta": float(fpr),
-            "fpr_budget": float(fpr_budget)}
+            "fpr_budget": float(fpr_budget), "feasible": bool(feasible),
+            "n_neg": int(n_neg), "n_pos": int(n_pos),
+            "fpr_resolution_limited": bool(res_limited),
+            "min_nonzero_fpr": (1.0 / n_neg) if n_neg else None}

@@ -22,24 +22,15 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, ".")
-from config import load_config
+from config import load_config, ATTACK_TYPES
 from multi_harm_common.calibrate import calibrate_specialist
-from multi_harm_common.detect import score_spec_on_split
+from multi_harm_common.detect import (per_type_auroc, score_spec_on_split,
+                                      spread_of)
 from multi_harm_common.io_utils import load_json, save_json
 from multi_harm_common.metrics import auroc
-from multi_harm_common.sigcache import load_cache
+from multi_harm_common.sigcache import load_cache, usable_df
 
-TYPES = ["topic", "naive", "fake", "combined"]
-
-
-def per_type_aurocs(scores_all: dict, cache, df, split: str):
-    out = {}
-    for t in TYPES:
-        m = cache.subset(df[(df["split"] == split) & (df["attack_type"] == t)]["id"].tolist())
-        idx = {sid: i for i, sid in enumerate(m["ids"])}
-        s = np.array([scores_all[sid] for sid in m["ids"]])
-        out[t] = float(auroc(m["labels"], s))
-    return out
+TYPES = ATTACK_TYPES
 
 
 def main():
@@ -50,7 +41,8 @@ def main():
         sys.exit(1)
     hstar = load_json(hstar_path)
     cache = load_cache(cfg.data_dir)
-    df = pd.read_parquet(os.path.join(cfg.data_dir, "dataset.parquet"))
+    df = usable_df(pd.read_parquet(os.path.join(cfg.data_dir, "dataset.parquet")),
+                   cache)
 
     print("Calibrating HARM_general (shared head + shared L*/probe/alpha/theta) ...")
     gen = calibrate_specialist("general", df, cache, cfg, hstar, use_shared_head=True)
@@ -60,14 +52,15 @@ def main():
 
     # ---- 4.8 row 2: per-type AUROC of the fused shared score (test) --------
     ev = score_spec_on_split(gen, df, cache, "test", cfg.epsilon)
-    scores_all = dict(zip(ev["ids"], ev["s"]))
-    per_type = per_type_aurocs(scores_all, cache, df, "test")
+    scores_all = dict(zip(ev["ids"], [float(v) for v in ev["s"]]))
+    per_type = per_type_auroc(scores_all, cache, df, "test", TYPES)
     row2 = {
         "config": "fused, shared calibration (HARM_general)",
         "L_star": gen["L_star"], "head": gen["head_shared"],
         "alpha": gen["alpha"], "theta": gen["theta"],
         "per_type_auroc": per_type,
-        "spread": max(per_type.values()) - min(per_type.values()),
+        "spread": spread_of(per_type),
+        "eval_set": "per type: injected-of-type + all clean rows of test split",
         "calib_auroc": gen["auroc"],
     }
     save_json(row2, os.path.join(cfg.out_dir, "experiments", "row2_general.json"))
@@ -81,17 +74,14 @@ def main():
     m = cache.subset(df[df["split"] == "test"]["id"].tolist())
     p = np.array([probe_probs(m["hid"][gen["L_star"]][i], gen["probe"])
                   for i in range(len(m["ids"]))])
-    hidden_per_type = {}
-    for t in TYPES:
-        sub = cache.subset(df[(df["split"] == "test") & (df["attack_type"] == t)]["id"].tolist())
-        idx = {sid: i for i, sid in enumerate(m["ids"])}
-        s = np.array([p[idx[sid]] for sid in sub["ids"]])
-        hidden_per_type[t] = float(auroc(sub["labels"], s))
+    hidden_per_type = per_type_auroc(dict(zip(m["ids"], p)), cache, df, "test",
+                                     TYPES)
     res = {
         "config": "hidden-only, shared probe at shared L* (PIShield-style baseline)",
         "L_star": gen["L_star"],
         "per_type_auroc": hidden_per_type,
-        "spread": max(hidden_per_type.values()) - min(hidden_per_type.values()),
+        "spread": spread_of(hidden_per_type),
+        "eval_set": "per type: injected-of-type + all clean rows of test split",
         "auroc_overall": float(auroc(m["labels"], p)),
     }
     save_json(res, os.path.join(cfg.out_dir, "experiments", "baseline_hidden_only.json"))

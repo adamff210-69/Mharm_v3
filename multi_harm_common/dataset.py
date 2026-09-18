@@ -4,7 +4,6 @@
 """
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 
@@ -14,10 +13,6 @@ import pandas as pd
 from config import ATTACK_TYPES, ATTACK_WRAPPERS, GOALS
 
 _STOP = set("the a an of and to in for is are was were on at by with from as or that this it be".split())
-
-
-def _seed_hash(s: str) -> int:
-    return int(hashlib.md5(s.encode()).hexdigest()[:8], 16)
 
 
 def _truncate_chars(s: str, n: int) -> str:
@@ -138,8 +133,11 @@ def _synthetic_pairs(cfg) -> pd.DataFrame:
         "What was prioritized in the planning cycle?",
         "When was the audit published?",
     ]
+    # deliberately index-arithmetic, not sampling: the pool is a pure function of
+    # (topics, sentences, queries, cfg.seed-free), so two machines get byte-identical
+    # datasets. v3.0 built an rng here and never used it, which made the pool look
+    # seeded when nothing consumed it.
     rows = []
-    rng = np.random.default_rng(cfg.seed)
     i = 0
     while len(rows) < cfg.n_base_pairs:
         t = topics[i % len(topics)]
@@ -189,7 +187,13 @@ def build_dataset(cfg) -> pd.DataFrame:
     n_cell = cfg.n_inj_per_cell
     n_inj_total = n_cell * len(ATTACK_TYPES) * len(GOALS)
     if len(base) < n_clean + n_inj_total:
-        print(f"  WARNING: only {len(base)} base pairs available; cycling with jitter.")
+        print(f"  WARNING: only {len(base)} distinct base pairs for "
+              f"{n_clean + n_inj_total} rows -> passages are REUSED across "
+              f"clean and injected rows (no jitter exists, despite the older "
+              f"wording of this message). Reuse is not fatal — injected rows "
+              f"still differ by payload — but a clean row and an injected row "
+              f"can now share a host passage. Raise MULTI_HARM_N_BASE_PAIRS "
+              f"(currently {cfg.n_base_pairs}) and rebuild to avoid it.")
     idx = np.arange(len(base))
     rng.shuffle(idx)
 
@@ -231,7 +235,9 @@ def build_dataset(cfg) -> pd.DataFrame:
         lab = ["train"] * n1 + ["val"] * n2 + ["test"] * (n - n1 - n2)
         for idx, lb in zip(grp.index, lab):
             labels_map[idx] = lb
-    shuffled = shuffled.drop(columns=["base_idx"])
     shuffled["split"] = [labels_map[i] for i in shuffled.index]
+    # base_idx is KEPT (v3.0 dropped it): it is the only record of which clean
+    # passage an injected row was built from, so without it a paired analysis
+    # (same host passage, clean vs injected) is unrecoverable after the split.
     return shuffled[["id", "split", "attack_type", "goal", "passage", "query",
-                     "injection", "injection_offset", "label"]]
+                     "injection", "injection_offset", "label", "base_idx"]]

@@ -9,7 +9,61 @@ from __future__ import annotations
 
 import numpy as np
 
+from . import sigcache as _sc
+from .metrics import auroc
 from .signals import head_ratio, probe_probs
+
+try:
+    from config import ATTACK_TYPES as TYPES
+except Exception:  # pragma: no cover
+    TYPES = ["topic", "naive", "fake", "combined"]
+
+
+# ---------------------------------------------------------------------------
+# Per-type evaluation sets  (the definition every §4.8 cell depends on)
+# ---------------------------------------------------------------------------
+
+def type_vs_clean_ids(df, split: str, attack_type: str) -> list[str]:
+    """Ids for the per-type discrimination test of one attack type: the
+    injected samples of ``attack_type`` on ``split`` PLUS the clean samples of
+    that split.
+
+    An AUROC needs both classes. Selecting only ``attack_type == t`` — which is
+    what v3.0 did in 05, 06 and 09 — yields an all-positive subset, and
+    metrics.auroc returns exactly 0.5 for a single-class input, so every cell
+    of the §4.8 spine table reads 0.5000 with spread 0.000 no matter what the
+    model does. Centralizing the subset here means rows 1/2/3 cannot drift
+    apart again.
+    """
+    sel = df[(df["split"] == split) &
+             ((df["attack_type"] == attack_type) | (df["attack_type"] == "clean"))]
+    return sel["id"].tolist()
+
+
+def score_map(ev: dict, key: str = "s") -> dict:
+    """{sample_id: score} from a score_spec_on_split result."""
+    return dict(zip(ev["ids"], [float(v) for v in ev[key]]))
+
+
+def per_type_auroc(scores_by_id: dict, cache, df, split: str = "test",
+                   types: list[str] | None = None) -> dict:
+    """AUROC of a score, computed per attack type against that split's clean
+    samples. ``scores_by_id`` must cover the whole split (clean included)."""
+    out = {}
+    for t in (types or TYPES):
+        ids = type_vs_clean_ids(df, split, t)
+        if len(ids) < 2:
+            out[t] = None
+            continue
+        sub = cache.subset(ids)
+        sc = np.array([scores_by_id[sid] for sid in sub["ids"]])
+        out[t] = float(auroc(sub["labels"], sc))
+    return out
+
+
+def spread_of(per_type: dict) -> float:
+    vals = [v for v in per_type.values() if v is not None]
+    return float(max(vals) - min(vals)) if vals else float("nan")
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +166,12 @@ def meta_decision(spec_scores: dict, specs: dict, general_score: float | None,
 
 def score_spec_on_split(spec: dict, df, cache, split: str, eps: float = 1e-6
                         ) -> dict:
-    """Fused scores for one specialist on all samples of a split."""
+    """Fused scores for one specialist on all samples of a split.
+
+    Restricted to samples that actually have cached signals (see
+    sigcache.usable_df), so results stay index-aligned with evaluate_meta.
+    """
+    df = _sc.usable_df(df, cache)
     rows = df[df["split"] == split].reset_index(drop=True)
     s = cache.subset(rows["id"].tolist())
     n = len(s["ids"])
@@ -135,6 +194,7 @@ def evaluate_meta(type_specs: list[dict], general_spec: dict | None, df, cache,
       overall / per-type: detection rate, ASR (1 - TPR), FPR, F1
       attribution accuracy on detected injected samples + confusion pairs.
     """
+    df = _sc.usable_df(df, cache)
     rows = df[df["split"] == split].reset_index(drop=True)
     per_spec = {sp["name"]: score_spec_on_split(sp, df, cache, split, cfg.epsilon)
                 for sp in type_specs}

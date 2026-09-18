@@ -1,11 +1,18 @@
 # Multi-HARM requirements.
 # GPU (Colab T4 / Kaggle P100 / local CUDA): install all lines.
 # CPU smoke test only: skip bitsandbytes (it will not install cleanly).
+#
+# Stages 02 and 04-11 (dataset, all calibration, all tables, figures, the
+# reproducibility zip, and run_offline_check.py) need only the bottom half of
+# this file — no torch, no transformers, no GPU. torch is required solely by
+# the model stages 01 and 03; env.py raises a named error if it is missing.
+# --- needed only by 01 / 03 (the model forward pass) ---
 torch
 transformers>=4.45
 accelerate
 bitsandbytes
 datasets
+# --- everything below runs the whole analysis pipeline on CPU ---
 scikit-learn
 pandas
 pyarrow

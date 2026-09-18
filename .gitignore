@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 data/
 out/
+.offline_check/
 .venv/
 *.egg-info/
 *.zip

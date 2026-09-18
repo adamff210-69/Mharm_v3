@@ -5,6 +5,21 @@ Reduced-size real-data run: **400 clean MS-MARCO + 400 injected
 4-bit (nf4). Same pipeline, same code as the full 2,000-sample run —
 only the dataset size changes (env vars in `demo_env.sh`).
 
+**Before you touch the T4**, run both no-GPU checks on any machine (CPU, no
+downloads): `python run_offline_check.py` (stages 02 + 04–11 against a planted
+signal cache) and `python run_tiny_model_check.py --full` (stages 01–11 against a
+locally built random-init Llama model — this is what exercises `03`'s extraction,
+gates, cache writer and staleness guard without a download). Each fails loudly on
+the classes of bug that would otherwise cost you a GPU session: the tiny-model
+check is what found `03`'s `AttributeError` on `sigcache.parquet_rows` and its
+`cfg.model_id` reference, both of which would have surfaced after hours of
+extraction, and the offline check is what found the `roc_auc_score(pos_label=...)`
+bug that made every v3.0 AUROC a constant 0.5.
+
+**Kaggle instead of Colab?** `KAGGLE.md` + `demo_kaggle.ipynb` cover the four
+things that differ (don't reinstall torch over Kaggle's, HF token or the ungated
+swap, env vars set once in the kernel, and the Save-Version resume recipe).
+
 **Integrity line to use at the review:** *"These numbers are from the
 800-sample pilot run; the full 2,000-sample run is queued for this
 week. All pipeline logic, validation gates, and reporting are identical."*
@@ -12,6 +27,7 @@ week. All pipeline logic, validation gates, and reporting are identical."*
 ## Colab quick start
 
 ```
+0. python run_offline_check.py     # no GPU; proves the analysis half is sound
 1. Repo is already on GitHub:  !git clone <your-repo-url> && %cd <repo>
    (or upload multi_harm_code.zip:  !unzip multi_harm_code.zip && %cd multi-harm)
 2. Run demo_colab.ipynb top to bottom (or:  !source ./demo_env.sh && bash demo_run.sh)
@@ -30,7 +46,7 @@ week. All pipeline logic, validation gates, and reporting are identical."*
 | 06 | 4.8 row 2 | seconds | HARM_general + PIShield-style baseline |
 | 07 | specialists | seconds | **half-split AUROC table (Phase 3 addition)** |
 | 08 | meta (val) | seconds | FPR/ASR/attribution on val |
-| 09 | all tables | ~5 min (loads model for latency) | Tables A–E, §4.3/4.4, **§4.8 spine table**, span-width audit |
+| 09 | all tables | ~5 min (loads model for latency) | Tables A–E, §4.3/4.4 (+ head×type cross-tab), **§4.8 spine table**, span-width audit + `width_invariance.json`, calibration-size sweep |
 | 10 | figures+report | seconds | `RESULTS.md` + 7 PNGs |
 
 **Critical path is stage 03.** Stages 04–10 run on cached signals
@@ -73,7 +89,12 @@ for the rest. But realistically 03 finishes well inside an hour.
    naive; R is span-width-invariant by construction (per-token
    intensity ratio vs passage body). Good defensive talking point.
 6. **Latency** (09 `--with-model`) — 5 specialists cost <0.5% over one
-   shared forward pass.
+   shared forward pass. (`demo_run.sh` now passes the flag through; in v3.0 the
+   driver silently dropped it, so the demo printed `n/a` here.)
+7. **Calibration-size sweep** (`09 --calib-sweep`, `fig_calib_sweep.png`) —
+   whether the §4.8 gain survives at calib_n 40/80/160. If it collapses as n
+   shrinks, say that; it is a stronger and more interesting result than an
+   unexplained gain.
 
 ## Expected anti-patterns (don't be surprised)
 

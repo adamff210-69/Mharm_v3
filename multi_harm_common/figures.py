@@ -45,7 +45,11 @@ def fig_halves_per_specialist(specs: list[dict], out_dir: str) -> str:
     ax.set_ylabel("AUROC (calibration set)")
     ax.set_ylim(0.4, 1.0)
     ax.legend()
-    ax.set_title("Specialization is carried by the residual-stream half")
+    # Neutral title: the v3.0 caption asserted the conclusion ("specialization
+    # IS carried by the residual half") before the numbers existed, and this
+    # figure is also used for the negative outcome the spec plans for.
+    ax.set_title("Per-specialist signal halves vs fusion (calibration AUROC)")
+    ax.set_xlabel("specialist (bars: attention half / hidden half / fused)")
     return _save(fig, out_dir, "fig_halves_per_specialist.png")
 
 
@@ -118,11 +122,19 @@ def fig_quant_compare(qc: dict, out_dir: str) -> str:
     if pl:
         layers = sorted(pl, key=int)
         vals = [pl[l] for l in layers]
-        axes[0].bar([str(l) for l in layers], vals, color="#4C72B0")
+        # Numeric positions + set_xticks labels: axvline() against a *categorical*
+        # axis (the v3.0 form, axvline(str(L))) is a TypeError on several
+        # matplotlib versions, and the CPU smoke test never reaches this branch
+        # because 03 skips §2.3 off-GPU — so it only broke on real T4 runs.
+        pos = np.arange(len(layers))
+        axes[0].bar(pos, vals, color="#4C72B0")
+        axes[0].set_xticks(pos, [str(l) for l in layers])
         axes[0].axhline(0.9, color="red", lw=0.8, ls="--", label="0.9 criterion")
-        if qc.get("chosen_L") is not None:
-            axes[0].axvline(str(qc["chosen_L"]), color="green", lw=1.2,
-                            ls=":")
+        chosen = qc.get("chosen_L")
+        if chosen is not None and str(chosen) in [str(l) for l in layers]:
+            axes[0].axvline(pos[[str(l) for l in layers].index(str(chosen))],
+                            color="green", lw=1.2, ls=":")
+        axes[0].set_xlabel("layer L* candidate")
         axes[0].set_ylabel(f"mean cos sim vs {qc.get('reference', 'ref')}")
         axes[0].set_title("Hidden-state fidelity per layer")
         axes[0].tick_params(axis="x", rotation=45)
@@ -155,6 +167,30 @@ def fig_latency(lat: dict, out_dir: str) -> str:
         title = f"Latency (scoring extra {lat.get('scoring_extra_ms', 0):.3f} ms)"
     ax.set_title(title)
     return _save(fig, out_dir, "fig_latency.png")
+
+
+def fig_calib_sweep(sweep_rows: list[dict], out_dir: str) -> str:
+    """Does the specialization gain survive a small calibration budget?
+    x = calib_n, one line per fused variant (mean over attack types)."""
+    if not sweep_rows:
+        return ""
+    ns = sorted({int(r["calib_n"]) for r in sweep_rows})
+    series = {"fused_calib": "fused (calib, optimistic)",
+              "fused_heldout": "fused (held-out calib)",
+              "fused_test": "fused (test, per type vs clean)"}
+    fig, ax = plt.subplots(figsize=(5.6, 4))
+    for key, lbl in series.items():
+        ys = [float(np.mean([r[key] for r in sweep_rows
+                             if int(r["calib_n"]) == n and r.get(key) is not None]))
+              for n in ns]
+        if any(np.isfinite(ys)):
+            ax.plot(ns, ys, marker="o", label=lbl)
+    ax.axhline(0.5, color="gray", lw=0.8, ls="--")
+    ax.set_xlabel("calibration samples per specialist")
+    ax.set_ylabel("AUROC (mean over attack types)")
+    ax.set_title("Specialization vs calibration budget")
+    ax.legend(fontsize=7)
+    return _save(fig, out_dir, "fig_calib_sweep.png")
 
 
 def fig_scores_hist(records, out_dir: str) -> str:

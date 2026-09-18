@@ -40,8 +40,10 @@ def main():
     specs = load_json(os.path.join(cfg.out_dir, "calib", "specialists.json"))
     gen = load_json(os.path.join(cfg.out_dir, "calib", "general.json"))
     row1 = load_json(os.path.join(exp, "row1_attn_shared.json"))
-    row2 = load_json(os.path.join(exp, "row2_general.json"))
-    hid_base = load_json(os.path.join(exp, "baseline_hidden_only.json"))
+    # loaded for their fail-fast side effect: a missing file here means 05/06 did
+    # not run, and the report would quietly omit rows 2 and the hidden baseline
+    load_json(os.path.join(exp, "row2_general.json"))
+    load_json(os.path.join(exp, "baseline_hidden_only.json"))
     _t48raw = load_json(os.path.join(exp, "table_48.json"))
     # v3.1 wraps the rows with an eval-set note; accept either shape
     t48 = _t48raw["rows"] if isinstance(_t48raw, dict) and "rows" in _t48raw else _t48raw

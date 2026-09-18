@@ -21,7 +21,8 @@ sys.path.insert(0, ".")
 from config import load_config
 from multi_harm_common import env as ENV
 from multi_harm_common.io_utils import save_json, ensure_dir
-from multi_harm_common.model import forward_signals, get_n_layers, load_model
+from multi_harm_common.model import (forward_signals, get_n_heads, get_n_layers,
+                                     load_model)
 from multi_harm_common.chat import encode_sample
 
 
@@ -35,6 +36,9 @@ def main():
     t0 = time.time()
     model, tokenizer, device, quant = load_model(cfg)
     n_layers = get_n_layers(model)
+    n_heads = get_n_heads(model)
+    print(f"  architecture: {type(model.config).__name__} — {n_layers} layers, "
+          f"{n_heads} heads/layer")
     cand = cfg.candidate_layers(n_layers)
     report.update({"load_seconds": round(time.time() - t0, 1),
                    "n_layers": n_layers,
@@ -69,11 +73,31 @@ def main():
         n_hid = len(sig["hidden"])
         n_layers_att = len(sig["attn_layers"])
         sample_m = list(sig["masses"].values())[0]
-        print(f"  {t['id']}: tokens={enc.n_tokens} "
+        print(f"  {t['id']}: tokens={enc.n_tokens}"
+              f"{' (clipped)' if enc.clipped else ''} "
               f"masses={n_layers_att}x{n_mass // n_layers_att} heads "
               f"hidden_layers={n_hid} m_qp={sample_m[0]:.4f} m_qi={sample_m[1]:.4f}")
-        assert n_mass == n_layers_att * model.config.n_head
+        assert n_mass == n_layers_att * n_heads, (
+            f"expected {n_layers_att} layers x {n_heads} heads = "
+            f"{n_layers_att * n_heads} mass entries, got {n_mass}")
         assert n_hid == len(cand)
+        # spans must live inside the tokens actually fed to the model
+        for nm_, rng in (("passage", enc.passage_range), ("query", enc.query_range),
+                         ("injection", enc.inj_range)):
+            if rng is not None:
+                assert 0 <= rng[0] < rng[1] <= enc.n_tokens, (
+                    f"{nm_} range {rng} outside the {enc.n_tokens} kept tokens — "
+                    f"a ratio computed from it would describe nothing")
+    # the metric every downstream selection depends on must actually compute
+    from multi_harm_common.metrics import auroc_selftest
+    st = auroc_selftest()
+    print(f"\n  AUROC self-test: {'OK' if st['ok'] else 'FAILED'} "
+          f"(perfect={st['perfect_separation']:.3f}, "
+          f"inverted={st['inverted_separation']:.3f}, "
+          f"single-class={st['single_class']:.3f})")
+    assert st["ok"], ("metrics.auroc is not computing — in v3.0 it returned 0.5 on "
+                      "every call (roc_auc_score has no pos_label kwarg) and every "
+                      "head/layer/alpha selection was a coin flip")
 
     ensure_dir(cfg.out_dir)
     save_json(report, f"{cfg.out_dir}/env_report.json")

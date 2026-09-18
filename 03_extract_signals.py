@@ -36,7 +36,7 @@ from multi_harm_common.chat import encode_sample, validate_token_ranges
 from multi_harm_common.io_utils import Checkpoint, save_json, ensure_dir
 from multi_harm_common.metrics import auroc, pearson
 from multi_harm_common.model import forward_signals, get_n_layers, load_model
-from multi_harm_common.sigcache import set_data_dir, save_row
+from multi_harm_common import sigcache
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -80,7 +80,11 @@ def run_validation_gate(cfg, tokenizer, df):
 def extract_all(cfg, model, tokenizer, df):
     n_layers = get_n_layers(model)
     cand = cfg.candidate_layers(n_layers)
-    set_data_dir(cfg.data_dir)
+    # Buffered chunked writes: rows are held in memory `chunk_rows` at a time
+    # and each output file is rewritten once per chunk, not once per row (the
+    # v3.0 per-row append re-read the whole file every sample, for meta plus
+    # every hidden-layer file — quadratic in the dataset).
+    sigcache.configure(cfg.data_dir, cfg.chunk_rows)
     ck = Checkpoint(os.path.join(cfg.out_dir, "progress", "extract.json"))
     todo = [s for s in df.to_dict("records") if not ck.done(s["id"])]
     print(f"Extraction: {len(df) - len(todo)} done, {len(todo)} to go "
@@ -89,15 +93,20 @@ def extract_all(cfg, model, tokenizer, df):
         print("Extraction already finished (checkpoint says so).")
         return
 
+    skipped, clipped = [], []
     t0 = time.time()
     for i, s in enumerate(todo):
         enc = encode_sample(tokenizer, s, cfg.max_seq_len, cfg.tail_len)
         if not enc.valid:
             print(f"  SKIP {s['id']}: {enc.note}")
+            skipped.append({"id": s["id"], "attack_type": s["attack_type"],
+                            "goal": s["goal"], "reason": enc.note})
             ck.mark_done(s["id"])
             continue
+        if enc.clipped:
+            clipped.append(s["id"])
         sig = forward_signals(model, enc, cfg.attn_last_k, cand)
-        save_row(cfg.data_dir, {
+        sigcache.save_row(cfg.data_dir, {
             "sample_id": s["id"], "split": s["split"],
             "attack_type": s["attack_type"], "goal": s["goal"],
             "label": int(s["label"]),
@@ -107,15 +116,62 @@ def extract_all(cfg, model, tokenizer, df):
         })
         ck.mark_done(s["id"])
         if (i + 1) % 25 == 0:
+            # order matters: land the rows BEFORE the checkpoint claims them,
+            # so a kill can only cost a re-do, never a claimed-but-missing row
+            sigcache.flush_sinks()
             ck.save()
         if (i + 1) % 50 == 0:
             el = time.time() - t0
             eta = el / (i + 1) * (len(todo) - i - 1)
             print(f"  {i + 1}/{len(todo)} | {el / 60:.1f} min elapsed | "
                   f"ETA {eta / 60:.1f} min")
+    sigcache.close_sinks()          # flush the trailing partial chunk first
     ck.finish()
-    print(f"Extraction complete in {(time.time() - t0) / 60:.1f} min "
+    save_json({"n_requested": len(df), "n_skipped": len(skipped),
+               "skipped": skipped, "n_clipped": len(clipped),
+               "clipped_ids": clipped,
+               "max_seq_len": cfg.max_seq_len,
+               "note": ("skipped samples have no cached signals; every stage "
+                        "from 04 on restricts itself to extracted rows via "
+                        "sigcache.usable_df, and reports the ids it dropped. "
+                        "clipped = a span was shortened by max_seq_len "
+                        "truncation (masses/widths stay consistent, but less of "
+                        "the payload is observable)")},
+              os.path.join(cfg.out_dir, "validation", "extraction_report.json"))
+    # provenance next to the cache itself: what model, what quantization, how
+    # many rows were dropped, and which dataset the ids came from
+    sigcache.save_provenance({
+        "written_by": "03_extract_signals.py",
+        "model_id": cfg.model_id,
+        "quant": quant,
+        "n_model_layers": n_layers,
+        "n_query_layers": len(cand),
+        "query_layers": list(cand),
+        "attn_last_k": cfg.attn_last_k,
+        "n_rows": len(df),
+        "n_skipped": len(skipped),
+        "skipped_ids": [s["id"] for s in skipped],
+        "n_clipped": len(clipped),
+        "max_seq_len": cfg.max_seq_len,
+        "tail_len": cfg.tail_len,
+        "dataset_fingerprint": sigcache.dataset_fingerprint(cfg, df, quant),
+    }, cfg.data_dir)
+    dt = (time.time() - t0) / 60
+    print(f"Extraction complete in {dt:.1f} min "
           f"(checkpoint: out/progress/extract.json)")
+    if clipped:
+        print(f"  NOTE: {len(clipped)} sample(s) had spans clipped by "
+              f"max_seq_len={cfg.max_seq_len}; consider raising "
+              f"MULTI_HARM_MAX_SEQ_LEN so payloads are fully visible.")
+    if skipped:
+        frac = len(skipped) / max(1, len(df))
+        print(f"  WARNING: {len(skipped)} sample(s) skipped ({frac:.1%}) — see "
+              f"out/validation/extraction_report.json")
+        if frac > cfg.max_skip_frac:
+            print(f"  FATAL: more than {cfg.max_skip_frac:.1%} of the dataset "
+                  f"could not be tokenized into valid ranges. The prompt layout "
+                  f"or max_seq_len is wrong; fix it before calibrating.")
+            sys.exit(1)
 
 
 # ===========================================================================
@@ -252,6 +308,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--quant-compare", action="store_true")
     ap.add_argument("--validate-only", action="store_true")
+    ap.add_argument("--fresh", action="store_true",
+                    help="discard any existing data/signals cache and the "
+                         "extraction checkpoint before running (required after "
+                         "re-running 02, whose ids otherwise overlap)")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -262,6 +322,31 @@ def main():
         print("dataset.parquet missing — run 02_build_dataset.py first.")
         sys.exit(1)
     df = pd.read_parquet(os.path.join(cfg.data_dir, "dataset.parquet"))
+
+    # A cache must never be silently reused after the dataset changed: the
+    # extraction checkpoint keys on sample id, so regenerated ids would be marked
+    # 'done' and their signals would be missing from every downstream stage.
+    if args.fresh:
+        import glob
+        import shutil
+        shutil.rmtree(os.path.join(cfg.data_dir, "signals"), ignore_errors=True)
+        for f in glob.glob(os.path.join(cfg.out_dir, "progress", "extract*.json")):
+            os.remove(f)
+        print("  --fresh: discarded data/signals and the extraction checkpoint")
+    else:
+        prior = sigcache.load_provenance(cfg.data_dir)
+        have = sigcache.parquet_rows(os.path.join(cfg.data_dir, "signals",
+                                                  "signals.parquet"))
+        if prior.get("dataset_fingerprint") and have > 0:
+            now = sigcache.dataset_fingerprint(cfg, df, quant)
+            if prior["dataset_fingerprint"] != now:
+                diff = sorted(k for k in now
+                              if now[k] != prior["dataset_fingerprint"].get(k))
+                raise RuntimeError(
+                    f"data/signals holds {have} rows extracted from a DIFFERENT "
+                    f"dataset (fields that changed: {diff}). The checkpoint would "
+                    f"mark the new samples done and they would silently be missing "
+                    f"from 04-11. Re-run with --fresh.")
 
     model, tokenizer, device, quant = load_model(cfg)
     if args.validate_only:

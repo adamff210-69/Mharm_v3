@@ -14,7 +14,12 @@ from . import signals as S
 from .metrics import auroc, pearson
 from .sigcache import SigCache
 
-TYPES = ["topic", "naive", "fake", "combined"]
+# Single source of truth (config) — the four type names were duplicated as a
+# literal in 6 files, so an override of the taxonomy silently split the pipeline.
+try:
+    from config import ATTACK_TYPES as TYPES
+except Exception:  # pragma: no cover - library use without the repo root
+    TYPES = ["topic", "naive", "fake", "combined"]
 
 
 # ---------------------------------------------------------------------------
@@ -98,9 +103,17 @@ def calibrate_specialist(name: str, df, cache: SigCache, cfg, hstar: dict,
     L = lres["best_layer"]
 
     # --- 2) probe at L* -------------------------------------------------------
-    probe, probe_auroc_fit = S.fit_probe(hid_sample, labels, L,
-                                         cfg.probe_fit_frac)
-    p_scores = np.array([S.probe_probs(hid_sample[i][L], probe) for i in range(n)])
+    probe, probe_report = S.fit_probe(hid_sample, labels, L,
+                                      cfg.probe_fit_frac)
+    # p_scores_in = deployed probe scored on the data it was fit on (optimistic;
+    # kept only to measure the overfitting gap). p_scores = OUT-OF-FOLD scores,
+    # which is what alpha, the z-stats and theta are now chosen from.
+    p_scores_in = np.array([S.probe_probs(hid_sample[i][L], probe)
+                            for i in range(n)])
+    p_scores, oof = S.crossfit_probs(hid_sample, labels, L,
+                                     cfg.probe_crossfit_folds)
+    # same deterministic split the probe was fit on -> honest held-out numbers
+    _fit_ix, eval_ix = S.fit_eval_split(n, cfg.probe_fit_frac)
 
     # --- 3) h_base (mean clean embedding at L*) + cosine diagnostic ----------
     clean_idx = [i for i in range(n) if labels[i] == 0]
@@ -123,7 +136,7 @@ def calibrate_specialist(name: str, df, cache: SigCache, cfg, hstar: dict,
                                       cfg.epsilon, widths[i])
                          for i in range(n)])
 
-    # --- 5) fusion weight alpha ------------------------------------------------
+    # --- 5) fusion weight alpha (on out-of-fold residual scores) ---------------
     fres = S.choose_alpha(r_head, p_scores, labels, step=cfg.alpha_step)
     a = fres["alpha"]
     zr, r_mu, r_sd = S.zscore(r_head)
@@ -151,9 +164,22 @@ def calibrate_specialist(name: str, df, cache: SigCache, cfg, hstar: dict,
         "auroc": {
             "att_head": float(auroc(labels, r_head)),
             "att_shared": float(auroc(labels, r_shared)),
-            "hid": float(auroc(labels, p_scores)),
+            "hid": float(auroc(labels, p_scores)),          # out-of-fold now
+            "hid_insample": float(auroc(labels, p_scores_in)),
+            "hid_oof_gap": float(auroc(labels, p_scores_in) - auroc(labels, p_scores)),
             "fused": float(auroc(labels, fused)),
             "cos_diag": float(auroc(labels, -cos)),
+            # Held-out fraction of the calibration set (the rows the probe was
+            # NOT fit on). alpha is tuned on the full calibration set, so
+            # "fused" above is optimistic by construction; these are the
+            # numbers to quote next to it.
+            "n_eval": int(len(eval_ix)),
+            "att_head_eval": (float(auroc(labels[eval_ix], r_head[eval_ix]))
+                              if len(eval_ix) > 1 else None),
+            "hid_eval": (float(auroc(labels[eval_ix], p_scores[eval_ix]))
+                         if len(eval_ix) > 1 else None),
+            "fused_eval": (float(auroc(labels[eval_ix], fused[eval_ix]))
+                           if len(eval_ix) > 1 else None),
         },
         "calib": {
             "n_samples": n,
@@ -161,9 +187,13 @@ def calibrate_specialist(name: str, df, cache: SigCache, cfg, hstar: dict,
             "n_inj": int((labels == 1).sum()),
             "ids": ids,
             "l_star_curve": lres["per_layer"],
+            "l_star_split": {"n_fit": lres.get("n_fit"), "n_eval": lres.get("n_eval")},
             "head_curve": head_res["all"],
             "hstar_best_auroc": float(head_res["best_auroc"]),
-            "probe_fit_auroc": float(probe_auroc_fit),
+            "probe_fit_auroc": float(probe_report["fit_auroc"]),
+            "probe_oof": oof,
+            "probe_eval_auroc": float(probe_report["eval_auroc"]),
+            "probe_split": {k: probe_report[k] for k in ("n_fit", "n_eval")},
             "alpha_curve": fres["curve"],
             "theta_info": tres,
             "pearson_half": float(pearson(r_head, p_scores)),

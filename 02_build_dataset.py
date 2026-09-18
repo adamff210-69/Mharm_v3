@@ -29,16 +29,24 @@ def _sha256_file(path: str) -> str:
 
 
 def write_fingerprint(cfg, dataset_path: str) -> None:
-    save_json({"sha256": _sha256_file(dataset_path)},
+    """The fingerprint covers the bytes AND the settings that produced them, so
+    a config change that alters the data (sizes, taxonomy, prompt layout version)
+    invalidates the signal cache instead of silently reusing stale rows."""
+    from config import ATTACK_TYPES, GOALS
+    save_json({"sha256": _sha256_file(dataset_path),
+               "version": cfg.version,
+               "n_clean": cfg.n_clean, "n_inj_per_cell": cfg.n_inj_per_cell,
+               "attack_types": list(ATTACK_TYPES), "n_goals": len(GOALS),
+               "max_seq_len": cfg.max_seq_len, "test_mode": cfg.test_mode,
+               "synthetic_clean": bool(cfg.synthetic_clean)},
               os.path.join(cfg.data_dir, "dataset_fingerprint.json"))
 
 
-def read_fingerprint(cfg) -> str | None:
-    fp = load_json(os.path.join(cfg.data_dir, "dataset_fingerprint.json"))
-    return fp.get("sha256") if fp else None
+def read_fingerprint(cfg) -> dict | None:
+    return load_json(os.path.join(cfg.data_dir, "dataset_fingerprint.json"))
 
 
-def _invalidate_signals(cfg, dataset_path: str) -> None:
+def _invalidate_signals(cfg) -> None:
     """Remove signal cache + extraction checkpoint if they were produced from
     a different dataset (same sample-id scheme, different content would
     silently corrupt every downstream number)."""
@@ -70,20 +78,39 @@ def main():
     reusable = False
     if os.path.exists(out) and not args.force:
         cur_hash = _sha256_file(out)
-        fp_hash = read_fingerprint(cfg)
+        fp = read_fingerprint(cfg) or {}
         df = pd.read_parquet(out)
-        if len(df) == expected_n and (fp_hash is None or fp_hash == cur_hash):
+        cfg_ok = (not fp) or all(
+            fp.get(k) == v for k, v in
+            [("sha256", cur_hash), ("version", cfg.version),
+             ("n_clean", cfg.n_clean), ("n_inj_per_cell", cfg.n_inj_per_cell),
+             ("max_seq_len", cfg.max_seq_len), ("test_mode", cfg.test_mode),
+             ("synthetic_clean", bool(cfg.synthetic_clean))])
+        if len(df) == expected_n and cfg_ok:
             reusable = True
         else:
-            print(f"WARNING: existing dataset is stale (rows={len(df)} vs "
-                  f"expected {expected_n}, fingerprint match="
-                  f"{fp_hash == cur_hash}). Rebuilding and invalidating the "
-                  f"signal cache.")
+            why = []
+            if fp.get("sha256") and fp["sha256"] != cur_hash:
+                why.append("dataset hash changed")
+            if fp and fp.get("version") not in (None, cfg.version):
+                why.append(f"code version {fp.get('version')} -> {cfg.version}")
+            if len(df) != expected_n:
+                why.append(f"rows {len(df)} != {expected_n}")
+            if fp and any(fp.get(k) != v for k, v in
+                          [("n_clean", cfg.n_clean),
+                           ("n_inj_per_cell", cfg.n_inj_per_cell),
+                           ("max_seq_len", cfg.max_seq_len),
+                           ("test_mode", cfg.test_mode),
+                           ("synthetic_clean", bool(cfg.synthetic_clean))]):
+                why.append("config mismatch (sizes/seq_len/mode)")
+            print("WARNING: existing dataset is stale ("
+                  + "; ".join(why or ["unknown"]) + "). Rebuilding and "
+                  "invalidating the signal cache.")
     if reusable:
         print(f"Dataset already built: {len(df)} rows -> {out}")
         print_split_stats(df)
         return
-    _invalidate_signals(cfg, out)
+    _invalidate_signals(cfg)
 
     print("Loading clean pairs ...")
     df = build_dataset(cfg)

@@ -50,6 +50,14 @@ ATTACK_WRAPPERS: dict[str, str] = {
 
 @dataclass
 class Config:
+    # --- provenance --------------------------------------------------------
+    # v3.1 = the base v3 implementation (tag base-v3, commit 6cc0dd5) plus the
+    # correctness fixes listed in CHANGELOG.md. Bumped into the dataset
+    # fingerprint and out/repro so a result file always says which version
+    # produced it.
+    version: str = "3.1.0"
+    base_spec: str = "HARM_Master_Implementation_Prompt_v3.md (see CHANGELOG.md)"
+
     # --- model -------------------------------------------------------------
     model_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct"
     quant: str = "auto"            # auto | nf4 | fp16 | bf16 | int8 | fp32
@@ -65,13 +73,19 @@ class Config:
     synthetic_clean: bool = False  # offline pipeline testing (no HF download)
     clean_passage_max_chars: int = 700
     clean_query_max_chars: int = 160
-    n_base_pairs: int = 1650       # clean pool to draw from (1000 + 650 inj cells)
+    # must cover n_clean + n_inj_per_cell*len(ATTACK_TYPES)*len(GOALS) (2,000
+    # in the full run) or base passages get reused as both clean and injected
+    # hosts; 2,200 leaves headroom after dedup/length filtering
+    n_base_pairs: int = 2200       # clean pool to draw from
     local_clean_csv: str = ""      # optional data/clean_pairs.csv fallback
 
     # --- calibration -------------------------------------------------------
     calib_h_samples: int = 160         # H* calibration size (v3 2.1: 150-200)
     calib_per_specialist: int = 160    # per-specialist calibration size
     probe_fit_frac: float = 0.70       # probe fit fraction of calibration set
+    probe_crossfit_folds: int = 2      # folds for out-of-fold P(inj) used to
+                                       # pick alpha / z-stats / theta (1 = v3.0
+                                       # behaviour: in-sample, biased)
     alpha_step: float = 0.05           # fusion-weight grid step
     target_fpr: float = 0.05           # overall FPR target (v3 success criteria)
     meta_mode: str = "per_spec"        # per_spec | global_max
@@ -87,6 +101,7 @@ class Config:
     quant_compare_n: int = 50          # fp16-vs-4bit sample subset (v3 2.3)
     quant_ref_chain: str = "fp16,bf16,int8,nf4"  # first loadable reference dtype
     n_validate: int = 12               # token-range validation samples (v3 2.0)
+    max_skip_frac: float = 0.05        # abort 03 if more than this share is unextractable
     n_latency_runs: int = 50
     seed: int = 42
 

@@ -35,6 +35,7 @@ class Encoding:
     text: str = field(repr=False, default="")
     valid: bool = True
     note: str = ""
+    clipped: bool = False              # a span was shortened by max_seq_len
 
 
 def _render_prompt(tokenizer, passage: str, query: str) -> str:
@@ -108,16 +109,42 @@ def encode_sample(tokenizer, sample: dict, max_seq_len: int,
     if valid and (p_tok is None or q_tok is None):
         valid, note = False, "token span mapping failed"
 
+    clipped = False
+    if len(ids) > max_seq_len:
+        # Truncation must clip the spans, not just the token ids: masses are
+        # read from the truncated attention matrix, and the ratio is normalized
+        # by span WIDTH, so un-clipped spans would silently describe tokens
+        # that were never fed to the model (and re-introduce the length
+        # confound the invariant ratio is built to remove).
+        ids = ids[:max_seq_len]
+
+        def _clip_tok(tok, name):
+            nonlocal valid, note, clipped
+            if tok is None:
+                return None
+            s, e = tok
+            s, e = max(0, min(s, max_seq_len)), max(0, min(e, max_seq_len))
+            if (s, e) != (tok[0], tok[1]):
+                clipped = True
+            if e <= s:
+                valid, note = False, f"{name} range truncated beyond max_seq_len"
+                return None
+            return (s, e)
+
+        p_tok = _clip_tok(p_tok, "passage")
+        q_tok = _clip_tok(q_tok, "query")
+        i_tok = _clip_tok(i_tok, "injection")
+        if valid and (p_tok is None or q_tok is None):
+            valid, note = False, "required span lost to max_seq_len truncation"
+
     # Clean samples: pseudo-injection region = last `tail_len` tokens of the
-    # passage (documented design assumption, see README "Design decisions").
+    # (post-truncation) passage span, so the signal is defined for both
+    # classes (documented design assumption, see README "Design decisions").
+    # Computed AFTER clipping on purpose: it must be the tail of what the model
+    # actually saw, not of the pre-truncation passage.
     if valid and i_tok is None and p_tok is not None:
         ps, pe = p_tok
         i_tok = (max(ps, pe - tail_len), pe)
-
-    if len(ids) > max_seq_len:
-        if valid and q_tok is not None and q_tok[1] > max_seq_len:
-            valid, note = False, "query range truncated beyond max_seq_len"
-        ids = ids[:max_seq_len]
 
     ids = torch.tensor(ids, dtype=torch.long).unsqueeze(0)
     return Encoding(
@@ -131,6 +158,7 @@ def encode_sample(tokenizer, sample: dict, max_seq_len: int,
         text=text,
         valid=valid,
         note=note,
+        clipped=clipped,
     )
 
 
